@@ -136,8 +136,11 @@ function playAlertSound() {
 /** Função de Text-to-Speech (Leitura de Voz) */
 function speak(text) {
     if (!gameState.isVoiceReadActive || !synth) return;
-    
-    synth.cancel();
+
+    // Evita cortar falas de forma agressiva (alguns navegadores podem “engolir” a primeira fala)
+    try {
+        if (synth.speaking || synth.pending) synth.cancel();
+    } catch (_) {}
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'pt-BR';
@@ -147,43 +150,62 @@ function speak(text) {
 }
 
 
-/** Fala uma sequência de mensagens sem cortar a anterior (resolve: lia só as respostas). */
+/** Fala uma sequência de mensagens (pergunta → alternativas) de forma confiável. */
+let __voiceQueueToken = 0;
 function speakSequence(texts) {
     if (!gameState.isVoiceReadActive || !synth) return;
     if (!Array.isArray(texts) || texts.length === 0) return;
 
-    // Interrompe qualquer leitura anterior e inicia uma fila nova
-    synth.cancel();
+    // Token para evitar que uma sequência antiga continue após iniciar uma nova
+    const token = ++__voiceQueueToken;
+
+    // Interrompe qualquer leitura anterior
+    try { synth.cancel(); } catch (_) {}
 
     let i = 0;
+
     const speakNext = () => {
+        if (token !== __voiceQueueToken) return;
         if (!gameState.isVoiceReadActive || !synth) return;
         if (i >= texts.length) return;
 
         const utterance = new SpeechSynthesisUtterance(String(texts[i]));
         utterance.lang = 'pt-BR';
         utterance.rate = 1.0;
+
         utterance.onend = () => { i++; speakNext(); };
         utterance.onerror = () => { i++; speakNext(); };
-        synth.speak(utterance);
+
+        try { synth.speak(utterance); } catch (_) {}
     };
 
-    speakNext();
+    // Pequeno delay após cancel() (melhora compatibilidade: em alguns navegadores a 1ª fala pode ser "comida")
+    setTimeout(speakNext, 80);
 }
 
-/** Monta textos para leitura de voz: pergunta + alternativas (1–4). */
+/** Monta textos para leitura de voz: 1) pergunta 2) alternativas (1–4). */
 function buildVoiceTextsForQuestion(questionObj) {
     if (!questionObj) return [];
-    const qText = questionObj.voiceQuestion || questionObj.question;
-    const opts = questionObj.voiceOptions || questionObj.options || [];
-    const optText = (opts.length === 4)
-        ? `Opções: 1) ${opts[0]}. 2) ${opts[1]}. 3) ${opts[2]}. 4) ${opts[3]}.`
-        : '';
 
-    return [
-        `Questão ${gameState.questionNumber}. ${qText}`,
-        optText
-    ].filter(Boolean);
+    const qCore = (questionObj.voiceQuestion || questionObj.question || '').toString().replace(/\s+/g, ' ').trim();
+    const opts = (questionObj.voiceOptions || questionObj.options || []).map(v => String(v));
+
+    // Pergunta primeiro (sempre)
+    const qText = qCore
+        ? `Questão ${gameState.questionNumber}. Quanto é ${qCore}?`
+        : `Questão ${gameState.questionNumber}.`;
+
+    // Alternativas depois, uma por vez (mais claro e mais estável no TTS)
+    const optionTexts = (opts.length === 4)
+        ? [
+            `Opção 1: ${opts[0]}.`,
+            `Opção 2: ${opts[1]}.`,
+            `Opção 3: ${opts[2]}.`,
+            `Opção 4: ${opts[3]}.`
+        ]
+        : [];
+
+    return [qText, ...optionTexts].filter(Boolean);
 }
 
 /** Lê novamente a questão atual (atalho: tecla R). */
