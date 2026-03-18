@@ -132,13 +132,59 @@ const __petHomeActionLock = { action: '', at: 0 };
 function ensureTouchClick(el){
     try {
         if (!el || !el.addEventListener) return;
+        if (el.dataset && el.dataset.petTouchCompatBound === '1') return;
+        if (el.dataset) el.dataset.petTouchCompatBound = '1';
+        let startX = 0;
+        let startY = 0;
+        let startAt = 0;
+        let tracking = false;
+        let moved = false;
+        const TAP_DISTANCE_PX = 12;
+        const TAP_MAX_DURATION_MS = 700;
+        const resetTouchState = () => {
+            tracking = false;
+            moved = false;
+            startAt = 0;
+            startX = 0;
+            startY = 0;
+        };
+        el.addEventListener('touchstart', (e) => {
+            const touch = e && e.changedTouches && e.changedTouches[0];
+            if (!touch) return;
+            tracking = true;
+            moved = false;
+            startAt = Date.now();
+            startX = Number(touch.clientX || 0);
+            startY = Number(touch.clientY || 0);
+        }, { passive: true });
+        el.addEventListener('touchmove', (e) => {
+            if (!tracking) return;
+            const touch = e && e.changedTouches && e.changedTouches[0];
+            if (!touch) return;
+            const dx = Math.abs(Number(touch.clientX || 0) - startX);
+            const dy = Math.abs(Number(touch.clientY || 0) - startY);
+            if (dx > TAP_DISTANCE_PX || dy > TAP_DISTANCE_PX) moved = true;
+        }, { passive: true });
+        el.addEventListener('touchcancel', resetTouchState, { passive: true });
         el.addEventListener('touchend', (e) => {
-            const last = __petTouchClickLock.get(el) || 0;
             const now = Date.now();
-            if (now - last < 350) return;
+            const touch = e && e.changedTouches && e.changedTouches[0];
+            const dx = touch ? Math.abs(Number(touch.clientX || 0) - startX) : 0;
+            const dy = touch ? Math.abs(Number(touch.clientY || 0) - startY) : 0;
+            const isTap = tracking && !moved && dx <= TAP_DISTANCE_PX && dy <= TAP_DISTANCE_PX && startAt > 0 && (now - startAt) <= TAP_MAX_DURATION_MS;
+            resetTouchState();
+            if (!isTap) return;
+            const last = __petTouchClickLock.get(el) || 0;
+            if (now - last < 450) return;
+            if (el.disabled) return;
             __petTouchClickLock.set(el, now);
             try { e.preventDefault(); } catch (_) {}
-            try { el.click(); } catch (_) {}
+            try { e.stopPropagation(); } catch (_) {}
+            try {
+                el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            } catch (_) {
+                try { el.click(); } catch (_) {}
+            }
         }, { passive: false });
     } catch (_) {}
 }
@@ -5568,11 +5614,7 @@ function initTeacherPanel() {
         };
         if (btnVideo) {
             btnVideo.addEventListener('click', openVideo);
-            btnVideo.addEventListener('pointerup', (e) => {
-                if (e && e.pointerType && e.pointerType !== 'mouse') {
-                    try { openVideo(); } catch (_) {}
-                }
-            });
+            try { ensureTouchClick(btnVideo); } catch (_) {}
         }
     } catch (_) {}
     } catch (_) {}
@@ -7037,11 +7079,7 @@ function initStudentPanel() {
         };
         if (btnVideo) {
             btnVideo.addEventListener('click', openVideo);
-            btnVideo.addEventListener('pointerup', (e) => {
-                if (e && e.pointerType && e.pointerType !== 'mouse') {
-                    try { openVideo(); } catch (_) {}
-                }
-            });
+            try { ensureTouchClick(btnVideo); } catch (_) {}
         }
     } catch (_) {}
     } catch (_) {}
@@ -14147,8 +14185,13 @@ attachEventListeners();
     // Prioridade 1: salvar e retomar sessão (andamento do jogo)
     try { initPetSessionPersistence(); } catch (_) {}
     try { bindReliableHomeButtons(); } catch (_) {}
-    // Prioridade 2: onboarding do primeiro acesso (após janela do 'Continuar')
-    try { setTimeout(() => { maybeShowOnboardingWizard(); }, 1200); } catch (_) {}
+    // Onboarding automático desativado: evita abrir modal sem ação explícita do usuário.
+    // Se quiser reativar futuramente, defina window.PET_AUTO_ONBOARDING = true antes da inicialização.
+    try {
+        if (window.PET_AUTO_ONBOARDING === true) {
+            setTimeout(() => { maybeShowOnboardingWizard(); }, 1200);
+        }
+    } catch (_) {}
     // Inicializa o badge de progresso (fica oculto até o jogo começar)
     ensureCycleProgressBadge();
     
@@ -14243,16 +14286,8 @@ function initTutorialVideo() {
     };
     try { window.PET_OPEN_TUTORIAL_VIDEO = open; } catch (_) {}
     btn.style.pointerEvents = 'auto';
-    btn.onclick = open;
     btn.addEventListener('click', open);
-    btn.addEventListener('pointerup', (e) => {
-        if (e && e.pointerType && e.pointerType !== 'mouse') {
-            try { open(); } catch (_) {}
-        }
-    });
-    btn.addEventListener('touchend', () => {
-        try { open(); } catch (_) {}
-    }, { passive: true });
+    try { ensureTouchClick(btn); } catch (_) {}
     if (closeBtn) {
         closeBtn.addEventListener('click', (e) => {
             try {
