@@ -37,6 +37,19 @@ create table if not exists public.student_profiles (
   constraint student_profiles_grade_year_chk check (grade_year is null or grade_year between 6 and 9)
 );
 
+
+create table if not exists public.teacher_profiles (
+  id uuid primary key default gen_random_uuid(),
+  auth_user_id uuid not null unique references public.profiles(auth_user_id) on delete cascade,
+  full_name text not null,
+  school_name text not null default '',
+  turma_label text not null default '',
+  email text not null default '',
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists public.student_device_links (
   id uuid primary key default gen_random_uuid(),
   student_profile_id uuid not null references public.student_profiles(id) on delete cascade,
@@ -250,6 +263,7 @@ end;
 $$;
 
 create index if not exists idx_student_profiles_auth_user_id on public.student_profiles(auth_user_id);
+create index if not exists idx_teacher_profiles_auth_user_id on public.teacher_profiles(auth_user_id);
 create index if not exists idx_student_device_links_student_profile_id on public.student_device_links(student_profile_id);
 create index if not exists idx_student_device_links_device_profile_id on public.student_device_links(device_profile_id);
 create index if not exists idx_classes_teacher_user_id on public.classes(teacher_user_id);
@@ -304,6 +318,57 @@ security definer
 set search_path = public
 as $$
   select coalesce((select p.role in ('teacher', 'admin') from public.profiles p where p.auth_user_id = auth.uid() limit 1), false);
+$$;
+
+
+create or replace function public.register_teacher_access(
+  p_full_name text,
+  p_school_name text,
+  p_turma_label text,
+  p_email text
+)
+returns public.teacher_profiles
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_auth_user_id uuid := auth.uid();
+  v_row public.teacher_profiles;
+begin
+  if v_auth_user_id is null then
+    raise exception 'Usuário não autenticado.';
+  end if;
+
+  insert into public.profiles (auth_user_id, role, display_name)
+  values (v_auth_user_id, 'teacher', coalesce(nullif(trim(p_full_name), ''), 'Professor'))
+  on conflict (auth_user_id)
+  do update set
+    role = 'teacher',
+    display_name = excluded.display_name,
+    updated_at = now();
+
+  insert into public.teacher_profiles (auth_user_id, full_name, school_name, turma_label, email, active)
+  values (
+    v_auth_user_id,
+    coalesce(nullif(trim(p_full_name), ''), 'Professor'),
+    coalesce(trim(p_school_name), ''),
+    coalesce(trim(p_turma_label), ''),
+    coalesce(trim(p_email), ''),
+    true
+  )
+  on conflict (auth_user_id)
+  do update set
+    full_name = excluded.full_name,
+    school_name = excluded.school_name,
+    turma_label = excluded.turma_label,
+    email = excluded.email,
+    active = true,
+    updated_at = now()
+  returning * into v_row;
+
+  return v_row;
+end;
 $$;
 
 create or replace function public.viewer_owns_class(p_class_id uuid)
@@ -411,6 +476,11 @@ create trigger trg_student_profiles_set_updated_at
 before update on public.student_profiles
 for each row execute function public.set_updated_at();
 
+drop trigger if exists trg_teacher_profiles_set_updated_at on public.teacher_profiles;
+create trigger trg_teacher_profiles_set_updated_at
+before update on public.teacher_profiles
+for each row execute function public.set_updated_at();
+
 drop trigger if exists trg_student_device_links_set_updated_at on public.student_device_links;
 create trigger trg_student_device_links_set_updated_at
 before update on public.student_device_links
@@ -445,6 +515,7 @@ revoke all on all tables in schema public from anon;
 grant usage on schema public to anon, authenticated;
 grant select, insert, update, delete on public.profiles to authenticated;
 grant select, insert, update, delete on public.student_profiles to authenticated;
+grant select, insert, update, delete on public.teacher_profiles to authenticated;
 grant select, insert, update, delete on public.student_device_links to authenticated;
 grant select, insert, update, delete on public.classes to authenticated;
 grant select, insert, update, delete on public.student_enrollments to authenticated;
@@ -457,6 +528,7 @@ grant execute on all functions in schema public to authenticated;
 
 alter table public.profiles enable row level security;
 alter table public.student_profiles enable row level security;
+alter table public.teacher_profiles enable row level security;
 alter table public.student_device_links enable row level security;
 alter table public.classes enable row level security;
 alter table public.student_enrollments enable row level security;
@@ -543,6 +615,44 @@ create policy student_profiles_delete on public.student_profiles
 for delete to authenticated
 using (
   auth.uid() is not null and (auth.uid() = auth_user_id or public.is_admin())
+);
+
+
+-- teacher_profiles
+
+drop policy if exists teacher_profiles_select on public.teacher_profiles;
+create policy teacher_profiles_select on public.teacher_profiles
+for select to authenticated
+using (
+  auth.uid() is not null
+  and (auth.uid() = auth_user_id or public.is_admin())
+);
+
+drop policy if exists teacher_profiles_insert on public.teacher_profiles;
+create policy teacher_profiles_insert on public.teacher_profiles
+for insert to authenticated
+with check (
+  auth.uid() is not null
+  and (auth.uid() = auth_user_id or public.is_admin())
+);
+
+drop policy if exists teacher_profiles_update on public.teacher_profiles;
+create policy teacher_profiles_update on public.teacher_profiles
+for update to authenticated
+using (
+  auth.uid() is not null
+  and (auth.uid() = auth_user_id or public.is_admin())
+)
+with check (
+  auth.uid() is not null
+  and (auth.uid() = auth_user_id or public.is_admin())
+);
+
+drop policy if exists teacher_profiles_delete on public.teacher_profiles;
+create policy teacher_profiles_delete on public.teacher_profiles
+for delete to authenticated
+using (
+  auth.uid() is not null and public.is_admin()
 );
 
 -- student_device_links

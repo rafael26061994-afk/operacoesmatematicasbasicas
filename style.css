@@ -822,6 +822,8 @@ body.dark-mode .mm-cycle-progress {
   padding: 16px;
 }
 .teacher-overlay.hidden { display: none; }
+.hidden { display: none !important; }
+[hidden] { display: none !important; }
 
 .teacher-panel {
   width: min(560px, 95vw);

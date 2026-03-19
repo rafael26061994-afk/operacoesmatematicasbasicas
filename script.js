@@ -3497,7 +3497,7 @@ function saveStudentProfile(profile) {
     gameState.studentProfile = safe;
     if (!isGuestProfileActive()) {
         updateStoredProfileMeta(gameState.activeProfileId, safe);
-        try { syncCloudProfileMetaForCurrentProfile(); } catch (_) {}
+        try { syncCloudProfileMetaForCurrentProfile().catch(() => {}); } catch (_) {}
     }
     syncProfileButtonLabel();
     return safe;
@@ -4010,6 +4010,7 @@ function ensureProfileUI() {
               <div class="teacher-row" style="margin-top: 12px; gap: 8px; flex-wrap: wrap;">
                 <button id="profile-cloud-signin" class="btn-action" type="button">Entrar na nuvem</button>
                 <button id="profile-cloud-signup" class="btn-action btn-secondary" type="button">Criar conta online</button>
+                <button id="profile-cloud-recover" class="btn-action btn-secondary" type="button">Recuperar senha</button>
                 <button id="profile-cloud-link" class="btn-action btn-secondary" type="button">Vincular perfil atual</button>
                 <button id="profile-cloud-sync" class="btn-action btn-secondary" type="button">Sincronizar agora</button>
                 <button id="profile-cloud-signout" class="btn-action btn-secondary" type="button" style="display:none;">Sair da conta online</button>
@@ -4035,8 +4036,9 @@ function ensureProfileUI() {
             closeProfileOverlay(true);
             setTimeout(() => { try { window.location.reload(); } catch (_) {} }, 40);
         });
-        overlay.querySelector('#profile-guest').addEventListener('click', () => {
+        overlay.querySelector('#profile-guest').addEventListener('click', async () => {
             activateGuestProfileContext();
+            try { await enforceCloudIsolationForProfile(PROFILE_GUEST_ID, { silent: true }); } catch (_) {}
             closeProfileOverlay(true);
             if (__profileForceLock) resolveProfileGate(true);
             else {
@@ -4044,7 +4046,7 @@ function ensureProfileUI() {
                 setTimeout(() => { try { window.location.reload(); } catch (_) {} }, 40);
             }
         });
-        overlay.querySelector('#profile-enter').addEventListener('click', () => {
+        overlay.querySelector('#profile-enter').addEventListener('click', async () => {
             const selected = __profileSelectedId ? getStoredProfile(__profileSelectedId) : null;
             const pin = normalizePin(overlay.querySelector('#profile-login-pin').value);
             if (!selected) {
@@ -4052,10 +4054,11 @@ function ensureProfileUI() {
                 return;
             }
             if (!verifyStoredProfilePin(selected.id, pin)) {
-                showFeedbackMessage('PIN inválido.', 'error', 1800);
+                showFeedbackMessage('PIN inválido. Tente novamente.', 'error', 1800);
                 return;
             }
             activateStoredProfileContext(selected.id);
+            try { await enforceCloudIsolationForProfile(selected.id, { silent: true }); } catch (_) {}
             closeProfileOverlay(true);
             if (__profileGateResolver) resolveProfileGate(true);
             else {
@@ -4063,7 +4066,7 @@ function ensureProfileUI() {
                 setTimeout(() => { try { window.location.reload(); } catch (_) {} }, 40);
             }
         });
-        overlay.querySelector('#profile-save-current').addEventListener('click', () => {
+        overlay.querySelector('#profile-save-current').addEventListener('click', async () => {
             const meta = {
                 name: overlay.querySelector('#profile-name').value,
                 turma: overlay.querySelector('#profile-turma').value,
@@ -4093,12 +4096,17 @@ function ensureProfileUI() {
                 __profileSelectedId = created.id;
                 __profileCreateMode = false;
                 activateStoredProfileContext(created.id);
+                try { await enforceCloudIsolationForProfile(created.id, { silent: true }); } catch (_) {}
                 closeProfileOverlay(true);
                 if (__profileGateResolver) resolveProfileGate(true);
                 else {
                     setProfileBootToken(created.id);
                     setTimeout(() => { try { window.location.reload(); } catch (_) {} }, 40);
                 }
+                return;
+            }
+            if (selected.id !== gameState.activeProfileId || gameState.isGuestProfile) {
+                showFeedbackMessage('Entre no perfil com o PIN correto antes de alterar este perfil neste dispositivo.', 'error', 2400);
                 return;
             }
             updateStoredProfileMeta(selected.id, safeMeta);
@@ -4130,7 +4138,7 @@ function ensureProfileUI() {
                 const result = await window.PETAuth.signUpWithEmail(email, password);
                 const authError = result?.error;
                 if (authError) throw authError;
-                await syncCloudProfileMetaForCurrentProfile();
+                await syncCloudProfileMetaForCurrentProfile({ explicitLink: true });
                 const boot = await runCloudBootstrapForCurrentProfile();
                 if (boot?.mode === 'local-preferred') {
                     await queueCloudSyncForCurrentProfile('progress', buildCloudProgressSnapshotForSync());
@@ -4138,7 +4146,7 @@ function ensureProfileUI() {
                 setProfileCloudUiMessage('Conta online criada. Perfil pronto para continuar deste dispositivo e sincronizar entre aparelhos.', 'success');
                 await refreshProfileCloudUi();
             } catch (err) {
-                setProfileCloudUiMessage(`Falha ao criar conta: ${String(err?.message || err)}`, 'error');
+                setProfileCloudUiMessage(mapCloudAuthErrorToMessage(err, 'signup'), 'error');
             } finally {
                 setProfileCloudUiBusy(false);
             }
@@ -4159,17 +4167,34 @@ function ensureProfileUI() {
                 const result = await window.PETAuth.signInWithEmail(email, password);
                 const authError = result?.error;
                 if (authError) throw authError;
-                await syncCloudProfileMetaForCurrentProfile();
-                const boot = await runCloudBootstrapForCurrentProfile();
-                if (boot?.mode === 'remote-preferred') {
-                    setProfileCloudUiMessage('Conta conectada e andamento mais recente carregado da nuvem.', 'success');
+                const ctx = (window.PETBridge && window.PETBridge.getActiveProfileContext) ? window.PETBridge.getActiveProfileContext() : { deviceProfileId: null, isGuest: true };
+                let access = null;
+                try {
+                    access = ctx?.deviceProfileId && !ctx?.isGuest && window.PETRepositories?.profiles?.resolveCloudAccess
+                        ? await window.PETRepositories.profiles.resolveCloudAccess(ctx.deviceProfileId)
+                        : null;
+                } catch (resolveErr) {
+                    access = { ok: false, reason: 'mismatch', error: resolveErr };
+                }
+                if (access && access.reason === 'mismatch') {
+                    await window.PETAuth.signOut();
+                    throw new Error('Esta conta online pertence a outro perfil já vinculado neste dispositivo. Entre com a conta correta do estudante para continuar.');
+                }
+                if (access && access.ok) {
+                    await syncCloudProfileMetaForCurrentProfile({ explicitLink: false });
+                    const boot = await runCloudBootstrapForCurrentProfile();
+                    if (boot?.mode === 'remote-preferred') {
+                        setProfileCloudUiMessage('Conta conectada e andamento mais recente carregado da nuvem.', 'success');
+                    } else {
+                        await queueCloudSyncForCurrentProfile('progress', buildCloudProgressSnapshotForSync());
+                        setProfileCloudUiMessage('Conta conectada. Este progresso local foi enviado para a nuvem para continuar em qualquer dispositivo.', 'success');
+                    }
                 } else {
-                    await queueCloudSyncForCurrentProfile('progress', buildCloudProgressSnapshotForSync());
-                    setProfileCloudUiMessage('Conta conectada. Este progresso local foi enviado para a nuvem para continuar em qualquer dispositivo.', 'success');
+                    setProfileCloudUiMessage('Conta conectada. Para evitar misturar alunos neste dispositivo, vincule o perfil atual somente se este e-mail for do estudante correto.', 'info');
                 }
                 await refreshProfileCloudUi();
             } catch (err) {
-                setProfileCloudUiMessage(`Falha ao entrar: ${String(err?.message || err)}`, 'error');
+                setProfileCloudUiMessage(mapCloudAuthErrorToMessage(err, 'signin'), 'error');
             } finally {
                 setProfileCloudUiBusy(false);
             }
@@ -4177,7 +4202,7 @@ function ensureProfileUI() {
         overlay.querySelector('#profile-cloud-link').addEventListener('click', async () => {
             try {
                 setProfileCloudUiBusy(true);
-                const linked = await syncCloudProfileMetaForCurrentProfile();
+                const linked = await syncCloudProfileMetaForCurrentProfile({ explicitLink: true });
                 if (!linked) throw new Error('Selecione um perfil local ativo e entre na conta online antes de vincular.');
                 setProfileCloudUiMessage('Perfil local vinculado à conta online.', 'success');
                 await refreshProfileCloudUi();
@@ -4201,6 +4226,28 @@ function ensureProfileUI() {
                 setProfileCloudUiBusy(false);
             }
         });
+        overlay.querySelector('#profile-cloud-recover').addEventListener('click', async () => {
+            const email = String(overlay.querySelector('#profile-cloud-email')?.value || '').trim();
+            if (!isCloudFeatureConfigured()) {
+                setProfileCloudUiMessage('Preencha supabaseUrl e supabaseAnonKey em js/pet-config.js primeiro.', 'error');
+                return;
+            }
+            if (!email) {
+                setProfileCloudUiMessage('Informe o e-mail cadastrado para enviar a recuperação de senha.', 'error');
+                return;
+            }
+            try {
+                setProfileCloudUiBusy(true);
+                const result = await window.PETAuth.requestPasswordReset(email);
+                const authError = result?.error;
+                if (authError) throw authError;
+                setProfileCloudUiMessage('Recuperação de senha enviada para o e-mail cadastrado. Abra o e-mail e siga o link para definir uma nova senha.', 'success');
+            } catch (err) {
+                setProfileCloudUiMessage(`Falha ao enviar recuperação de senha: ${String(err?.message || err)}`, 'error');
+            } finally {
+                setProfileCloudUiBusy(false);
+            }
+        });
         overlay.querySelector('#profile-cloud-signout').addEventListener('click', async () => {
             try {
                 setProfileCloudUiBusy(true);
@@ -4215,13 +4262,173 @@ function ensureProfileUI() {
         });
         try {
             if (window.PETAuth && window.PETAuth.onAuthStateChange) {
-                window.PETAuth.onAuthStateChange(async () => {
+                window.PETAuth.onAuthStateChange(async (_session, event) => {
+                    try { if (event === 'PASSWORD_RECOVERY') await maybeOpenCloudRecoveryModal(true); } catch (_) {}
                     try { await refreshProfileCloudUi(); } catch (_) {}
                 });
             }
         } catch (_) {}
     }
     syncProfileButtonLabel();
+}
+
+function getDeviceProfileCloudLinkInfo(deviceProfileId = null) {
+    try {
+        const targetId = String(deviceProfileId || gameState.activeProfileId || '').trim();
+        if (!targetId || !window.PETLocalDriver || !window.PETLocalDriver.getCloudLinkInfo) return null;
+        return window.PETLocalDriver.getCloudLinkInfo(targetId);
+    } catch (_) {
+        return null;
+    }
+}
+function mapCloudAuthErrorToMessage(err, action = 'signin') {
+    const raw = String(err?.message || err || '').trim();
+    const normalized = raw.toLowerCase();
+    if (action === 'signin' && (normalized.includes('invalid login credentials') || normalized.includes('invalid credentials'))) {
+        return 'A senha está incorreta. Tente novamente. Se esqueceu a senha, use “Recuperar senha” para receber o link no e-mail cadastrado.';
+    }
+    if (normalized.includes('email not confirmed')) {
+        return 'O e-mail da conta online ainda não foi confirmado. Abra o e-mail cadastrado e confirme o acesso antes de entrar.';
+    }
+    if (normalized.includes('already registered') || normalized.includes('user already registered')) {
+        return 'Este e-mail já está cadastrado. Entre na nuvem ou use “Recuperar senha”.';
+    }
+    if (action === 'signup' && normalized.includes('password')) {
+        return 'Não foi possível criar a conta online com essa senha. Use pelo menos 8 caracteres.';
+    }
+    if (raw) return action === 'signin' ? `Falha ao entrar: ${raw}` : `Falha na conta online: ${raw}`;
+    return action === 'signin'
+        ? 'Falha ao entrar na conta online. Tente novamente ou use “Recuperar senha”.'
+        : 'Falha na conta online. Tente novamente.';
+}
+async function enforceCloudIsolationForProfile(deviceProfileId = null, options = {}) {
+    try {
+        if (!window.PETAuth || !window.PETAuth.isConfigured || !window.PETAuth.isConfigured()) return { mode: 'disabled' };
+        if (isCloudRecoveryModeFromUrl()) return { mode: 'recovery-bypass' };
+        const session = await window.PETAuth.getSession();
+        if (!session || !session.user) return { mode: 'no-session' };
+        const targetId = String(deviceProfileId || gameState.activeProfileId || '').trim();
+        if (!targetId || targetId === PROFILE_GUEST_ID) {
+            await window.PETAuth.signOut();
+            return { mode: 'signed-out-guest' };
+        }
+        const linkInfo = getDeviceProfileCloudLinkInfo(targetId);
+        const currentUserId = String(session.user.id || '').trim();
+        if (!linkInfo || !linkInfo.studentProfileId) {
+            await window.PETAuth.signOut();
+            return { mode: 'signed-out-unlinked' };
+        }
+        if (linkInfo.authUserId && linkInfo.authUserId !== currentUserId) {
+            await window.PETAuth.signOut();
+            return { mode: 'signed-out-mismatch' };
+        }
+        return { mode: 'kept', linkInfo };
+    } catch (err) {
+        if (!options || !options.silent) {
+            try { console.warn('Falha ao isolar sessão cloud do perfil ativo:', err); } catch (_) {}
+        }
+        return { mode: 'error', error: err };
+    }
+}
+function isCloudRecoveryModeFromUrl() {
+    try {
+        const href = String(window.location.href || '').toLowerCase();
+        const hash = String(window.location.hash || '').toLowerCase();
+        return href.includes('type=recovery') || hash.includes('type=recovery');
+    } catch (_) {
+        return false;
+    }
+}
+function clearCloudRecoveryUrlState() {
+    try {
+        const url = new URL(window.location.href);
+        url.hash = '';
+        window.history.replaceState({}, document.title, url.toString());
+    } catch (_) {}
+}
+function ensureCloudRecoveryModal() {
+    let modal = document.querySelector('#pet-cloud-recovery-modal');
+    if (modal) return modal;
+    modal = document.createElement('div');
+    modal.id = 'pet-cloud-recovery-modal';
+    modal.className = 'teacher-overlay';
+    modal.style.display = 'none';
+    modal.innerHTML = `
+      <div class="teacher-panel" style="max-width: 520px; width: min(92vw, 520px);">
+        <div class="teacher-panel-header">
+          <div>
+            <h3>Definir nova senha</h3>
+          </div>
+          <button id="pet-cloud-recovery-close" class="teacher-close" type="button" aria-label="Fechar">✕</button>
+        </div>
+        <p class="teacher-help">Digite a nova senha da conta online do estudante. Isso vale para qualquer dispositivo que usar esse e-mail.</p>
+        <div id="pet-cloud-recovery-status" class="profile-inline-note" data-level="info">Use pelo menos 8 caracteres.</div>
+        <label class="tp-label">Nova senha</label>
+        <input id="pet-cloud-recovery-password" class="tp-input" type="password" maxlength="80" placeholder="Mínimo recomendado: 8 caracteres">
+        <label class="tp-label">Confirmar nova senha</label>
+        <input id="pet-cloud-recovery-password-confirm" class="tp-input" type="password" maxlength="80" placeholder="Repita a nova senha">
+        <div class="teacher-row" style="margin-top: 12px; gap: 8px; flex-wrap: wrap;">
+          <button id="pet-cloud-recovery-save" class="btn-action" type="button">Salvar nova senha</button>
+          <button id="pet-cloud-recovery-cancel" class="btn-action btn-secondary" type="button">Cancelar</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    const setStatus = (message, level = 'info') => {
+        const box = modal.querySelector('#pet-cloud-recovery-status');
+        if (box) {
+            box.textContent = String(message || '');
+            box.setAttribute('data-level', String(level || 'info'));
+        }
+    };
+    const close = () => {
+        modal.style.display = 'none';
+    };
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) close();
+    });
+    modal.querySelector('#pet-cloud-recovery-close').addEventListener('click', close);
+    modal.querySelector('#pet-cloud-recovery-cancel').addEventListener('click', close);
+    modal.querySelector('#pet-cloud-recovery-save').addEventListener('click', async () => {
+        const pass1 = String(modal.querySelector('#pet-cloud-recovery-password')?.value || '');
+        const pass2 = String(modal.querySelector('#pet-cloud-recovery-password-confirm')?.value || '');
+        if (!pass1 || pass1.length < 8) {
+            setStatus('Use pelo menos 8 caracteres na nova senha.', 'error');
+            return;
+        }
+        if (pass1 !== pass2) {
+            setStatus('A confirmação da nova senha não confere.', 'error');
+            return;
+        }
+        try {
+            const btn = modal.querySelector('#pet-cloud-recovery-save');
+            if (btn) btn.disabled = true;
+            const result = await window.PETAuth.updatePassword(pass1);
+            if (result?.error) throw result.error;
+            setStatus('Nova senha salva com sucesso. Agora você já pode entrar com ela em qualquer dispositivo.', 'success');
+            clearCloudRecoveryUrlState();
+            setTimeout(close, 900);
+        } catch (err) {
+            setStatus(`Falha ao salvar a nova senha: ${String(err?.message || err)}`, 'error');
+        } finally {
+            const btn = modal.querySelector('#pet-cloud-recovery-save');
+            if (btn) btn.disabled = false;
+        }
+    });
+    return modal;
+}
+async function maybeOpenCloudRecoveryModal(force = false) {
+    try {
+        if (!force && !isCloudRecoveryModeFromUrl()) return false;
+        const modal = ensureCloudRecoveryModal();
+        modal.style.display = 'flex';
+        setTimeout(() => {
+            try { modal.querySelector('#pet-cloud-recovery-password')?.focus(); } catch (_) {}
+        }, 30);
+        return true;
+    } catch (_) {
+        return false;
+    }
 }
 
 function isCloudFeatureConfigured() {
@@ -4255,7 +4462,7 @@ function setProfileCloudUiMessage(message, level = 'info') {
 function setProfileCloudUiBusy(flag) {
     const state = getProfileCloudUiState();
     state.busy = !!flag;
-    ['#profile-cloud-signin', '#profile-cloud-signup', '#profile-cloud-signout', '#profile-cloud-sync', '#profile-cloud-link'].forEach((sel) => {
+    ['#profile-cloud-signin', '#profile-cloud-signup', '#profile-cloud-recover', '#profile-cloud-signout', '#profile-cloud-sync', '#profile-cloud-link'].forEach((sel) => {
         const el = document.querySelector(sel);
         if (el) el.disabled = !!flag;
     });
@@ -4268,6 +4475,7 @@ async function refreshProfileCloudUi() {
     const signOutBtn = __profileOverlay.querySelector('#profile-cloud-signout');
     const signInBtn = __profileOverlay.querySelector('#profile-cloud-signin');
     const signUpBtn = __profileOverlay.querySelector('#profile-cloud-signup');
+    const recoverBtn = __profileOverlay.querySelector('#profile-cloud-recover');
     const syncBtn = __profileOverlay.querySelector('#profile-cloud-sync');
     const linkBtn = __profileOverlay.querySelector('#profile-cloud-link');
     const activeCtx = (window.PETBridge && window.PETBridge.getActiveProfileContext) ? window.PETBridge.getActiveProfileContext() : { deviceProfileId: null, isGuest: true };
@@ -4275,29 +4483,42 @@ async function refreshProfileCloudUi() {
     const configured = isCloudFeatureConfigured();
     const session = await getCloudSessionSafe();
     const email = session?.user?.email || '';
-    const linkMap = (window.PETLocalDriver && window.PETLocalDriver.getCloudLinkMap) ? window.PETLocalDriver.getCloudLinkMap() : {};
-    const linked = !!(activeCtx?.deviceProfileId && linkMap[activeCtx.deviceProfileId]);
+    const linkInfo = hasLocalProfile ? getDeviceProfileCloudLinkInfo(activeCtx.deviceProfileId) : null;
+    const access = configured && session && hasLocalProfile && window.PETRepositories?.profiles?.resolveCloudAccess
+        ? await window.PETRepositories.profiles.resolveCloudAccess(activeCtx.deviceProfileId)
+        : null;
+    const linked = !!(linkInfo && linkInfo.studentProfileId);
     if (statusBadge) {
         if (!configured) statusBadge.textContent = 'Supabase não configurado';
         else if (!session) statusBadge.textContent = 'Conta online desconectada';
         else if (!hasLocalProfile) statusBadge.textContent = 'Visitante não sincroniza';
-        else statusBadge.textContent = linked ? 'Perfil vinculado à nuvem' : 'Conta conectada, perfil local não vinculado';
+        else if (access && access.reason === 'mismatch') statusBadge.textContent = 'Conta online errada para este perfil';
+        else statusBadge.textContent = linked ? 'Perfil vinculado à nuvem' : 'Perfil ainda não vinculado';
     }
     if (signOutBtn) signOutBtn.style.display = session ? 'inline-flex' : 'none';
     if (signInBtn) signInBtn.style.display = session ? 'none' : 'inline-flex';
     if (signUpBtn) signUpBtn.style.display = session ? 'none' : 'inline-flex';
+    if (recoverBtn) recoverBtn.style.display = session ? 'none' : 'inline-flex';
     if (syncBtn) syncBtn.style.display = session ? 'inline-flex' : 'none';
     if (linkBtn) linkBtn.style.display = session ? 'inline-flex' : 'none';
-    if (syncBtn) syncBtn.disabled = !session || !hasLocalProfile;
-    if (linkBtn) linkBtn.disabled = !session || !hasLocalProfile;
+    if (syncBtn) syncBtn.disabled = !session || !hasLocalProfile || !linked || !!(access && !access.ok);
+    if (linkBtn) linkBtn.disabled = !session || !hasLocalProfile || !!(access && access.reason === 'mismatch');
     if (emailEl) emailEl.disabled = !!session;
     if (pwdEl) pwdEl.disabled = !!session;
     const state = getProfileCloudUiState();
-    setProfileCloudUiMessage(state.message || (configured
-        ? (session
-            ? (email ? `Conta conectada: ${email}` : 'Conta online conectada.')
-            : 'Conta online opcional para backup e sincronização.')
-        : 'Preencha supabaseUrl e supabaseAnonKey em js/pet-config.js para ativar a nuvem.'), state.level || 'info');
+    let defaultMessage = 'Conta online opcional para backup e sincronização.';
+    if (!configured) {
+        defaultMessage = 'Preencha supabaseUrl e supabaseAnonKey em js/pet-config.js para ativar a nuvem.';
+    } else if (session && !hasLocalProfile) {
+        defaultMessage = 'Visitante não sincroniza. Entre em um perfil com PIN para usar a nuvem.';
+    } else if (session && access && access.reason === 'mismatch') {
+        defaultMessage = `Conta conectada (${email || 'sem e-mail'}), mas este perfil local pertence a outro estudante neste dispositivo. Saia da conta online e entre com a conta correta.`;
+    } else if (session && hasLocalProfile && !linked) {
+        defaultMessage = `Conta conectada: ${email || 'sem e-mail'}. Este perfil local ainda não está vinculado. Para evitar misturar alunos, vincule apenas se esse e-mail for do estudante correto.`;
+    } else if (session) {
+        defaultMessage = email ? `Conta conectada: ${email}` : 'Conta online conectada.';
+    }
+    setProfileCloudUiMessage(state.message || defaultMessage, state.level || 'info');
 }
 async function runCloudBootstrapForCurrentProfile() {
     try {
@@ -4332,24 +4553,24 @@ async function queueCloudSyncForCurrentProfile(kind = 'progress', payload = null
         }
         if (!(await getCloudSessionSafe())) return { mode: 'queued-local-no-session' };
         const profile = window.PETRepositories.profiles.readLocal(ctx.deviceProfileId, false);
-        await window.PETRepositories.profiles.ensureCloudLinked(ctx.deviceProfileId, profile);
+        await window.PETRepositories.profiles.ensureCloudLinked(ctx.deviceProfileId, profile, { explicitLink: false });
         return await window.PETSync.syncNow();
     } catch (err) {
         console.warn('Falha ao sincronizar com a nuvem:', err);
         return { mode: 'error', error: err };
     }
 }
-async function syncCloudProfileMetaForCurrentProfile() {
+async function syncCloudProfileMetaForCurrentProfile(options = {}) {
     try {
         if (!window.PETBridge || !window.PETRepositories) return null;
         const ctx = window.PETBridge.getActiveProfileContext();
         if (!ctx || !ctx.deviceProfileId || ctx.isGuest) return null;
         if (!(await getCloudSessionSafe())) return null;
         const profile = window.PETRepositories.profiles.readLocal(ctx.deviceProfileId, false);
-        return await window.PETRepositories.profiles.ensureCloudLinked(ctx.deviceProfileId, profile);
+        return await window.PETRepositories.profiles.ensureCloudLinked(ctx.deviceProfileId, profile, options || {});
     } catch (err) {
         console.warn('Falha ao vincular perfil local à nuvem:', err);
-        return null;
+        throw err;
     }
 }
 function getCloudAttemptStageLabel(question) {
@@ -5656,6 +5877,493 @@ function describePedagogyLevelOverride(override) {
     if (mode === 'experimental') return 'liberação em observação';
     return 'sem override';
 }
+
+const TEACHER_PROVISIONAL_PASSWORD = 'bondadejfa';
+const TEACHER_ACCESS_HINT_KEY = 'matemagica_teacher_access_hint_v1';
+let __teacherAccessOverlay = null;
+let __teacherAccessResolver = null;
+let __teacherCurrentProfile = null;
+let __teacherAuthHooksBound = false;
+
+function getTeacherAccessHintSafe() {
+    try {
+        const raw = localStorage.getItem(TEACHER_ACCESS_HINT_KEY);
+        const obj = raw ? JSON.parse(raw) : {};
+        return (obj && typeof obj === 'object') ? obj : {};
+    } catch (_) {
+        return {};
+    }
+}
+function saveTeacherAccessHint(data) {
+    try {
+        const safe = data && typeof data === 'object' ? data : {};
+        localStorage.setItem(TEACHER_ACCESS_HINT_KEY, JSON.stringify({
+            email: String(safe.email || '').trim().slice(0, 180),
+            full_name: String(safe.full_name || '').trim().slice(0, 160),
+            school_name: String(safe.school_name || '').trim().slice(0, 180),
+            turma_label: String(safe.turma_label || '').trim().slice(0, 120)
+        }));
+    } catch (_) {}
+}
+function isTeacherRecoveryModeFromUrl() {
+    try {
+        const scope = String(window.PETAuth?.getRecoveryScopeFromUrl?.() || 'student').trim().toLowerCase();
+        return scope === 'teacher' && isCloudRecoveryModeFromUrl();
+    } catch (_) {
+        return false;
+    }
+}
+function clearTeacherRecoveryUrlState() {
+    try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('pet_recovery_scope');
+        url.hash = '';
+        window.history.replaceState({}, document.title, url.toString());
+    } catch (_) {}
+}
+function mapTeacherAuthErrorToMessage(err, action = 'signin') {
+    const raw = String(err?.message || err || '').trim();
+    const normalized = raw.toLowerCase();
+    if (action === 'signin' && (normalized.includes('invalid login credentials') || normalized.includes('invalid credentials'))) {
+        return 'Senha incorreta. Tente novamente ou use “Recuperar senha”.';
+    }
+    if (normalized.includes('email not confirmed')) {
+        return 'Confirme o e-mail do professor antes de entrar.';
+    }
+    if (normalized.includes('already registered') || normalized.includes('user already registered')) {
+        return 'Esse e-mail já está cadastrado. Entre ou use “Recuperar senha”.';
+    }
+    if (action === 'signup' && normalized.includes('password')) {
+        return 'A nova senha precisa ter pelo menos 8 caracteres.';
+    }
+    if (raw) return action === 'signin' ? `Falha no acesso: ${raw}` : `Falha no cadastro: ${raw}`;
+    return action === 'signin'
+        ? 'Não foi possível liberar o acesso. Tente novamente ou use “Recuperar senha”.'
+        : 'Não foi possível concluir o cadastro. Tente novamente.';
+}
+function ensureTeacherRecoveryModal() {
+    let modal = document.querySelector('#pet-teacher-recovery-modal');
+    if (modal) return modal;
+    modal = document.createElement('div');
+    modal.id = 'pet-teacher-recovery-modal';
+    modal.className = 'teacher-overlay';
+    modal.style.display = 'none';
+    modal.innerHTML = `
+      <div class="teacher-panel" style="max-width: 520px; width: min(92vw, 520px);">
+        <div class="teacher-panel-header">
+          <div><h3>Definir nova senha</h3></div>
+          <button id="pet-teacher-recovery-close" class="teacher-close" type="button" aria-label="Fechar">✕</button>
+        </div>
+        <p class="teacher-help">Digite a nova senha para voltar a acessar o painel.</p>
+        <div id="pet-teacher-recovery-status" class="profile-inline-note" data-level="info">Use pelo menos 8 caracteres.</div>
+        <label class="tp-label">Nova senha</label>
+        <input id="pet-teacher-recovery-password" class="tp-input" type="password" maxlength="80" placeholder="Mínimo recomendado: 8 caracteres">
+        <label class="tp-label">Confirmar nova senha</label>
+        <input id="pet-teacher-recovery-password-confirm" class="tp-input" type="password" maxlength="80" placeholder="Repita a nova senha">
+        <div class="teacher-row" style="margin-top: 12px; gap: 8px; flex-wrap: wrap;">
+          <button id="pet-teacher-recovery-save" class="btn-action" type="button">Salvar nova senha</button>
+          <button id="pet-teacher-recovery-cancel" class="btn-action btn-secondary" type="button">Cancelar</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    const setStatus = (message, level = 'info') => {
+        const box = modal.querySelector('#pet-teacher-recovery-status');
+        if (box) {
+            box.textContent = String(message || '');
+            box.setAttribute('data-level', String(level || 'info'));
+        }
+    };
+    const close = async () => {
+        modal.style.display = 'none';
+        try { await window.PETAuth?.signOutTeacher?.(); } catch (_) {}
+    };
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) close();
+    });
+    modal.querySelector('#pet-teacher-recovery-close').addEventListener('click', () => { close(); });
+    modal.querySelector('#pet-teacher-recovery-cancel').addEventListener('click', () => { close(); });
+    modal.querySelector('#pet-teacher-recovery-save').addEventListener('click', async () => {
+        const pass1 = String(modal.querySelector('#pet-teacher-recovery-password')?.value || '');
+        const pass2 = String(modal.querySelector('#pet-teacher-recovery-password-confirm')?.value || '');
+        if (!pass1 || pass1.length < 8) {
+            setStatus('Use pelo menos 8 caracteres na nova senha.', 'error');
+            return;
+        }
+        if (pass1 !== pass2) {
+            setStatus('A confirmação da nova senha não confere.', 'error');
+            return;
+        }
+        try {
+            const btn = modal.querySelector('#pet-teacher-recovery-save');
+            if (btn) btn.disabled = true;
+            const result = await window.PETAuth.updateTeacherPassword(pass1);
+            if (result?.error) throw result.error;
+            setStatus('Nova senha salva com sucesso.', 'success');
+            clearTeacherRecoveryUrlState();
+            setTimeout(() => { try { close(); } catch (_) {} }, 900);
+        } catch (err) {
+            setStatus(`Falha ao salvar a nova senha: ${String(err?.message || err)}`, 'error');
+        } finally {
+            const btn = modal.querySelector('#pet-teacher-recovery-save');
+            if (btn) btn.disabled = false;
+        }
+    });
+    return modal;
+}
+async function maybeOpenTeacherRecoveryModal(force = false) {
+    try {
+        if (!force && !isTeacherRecoveryModeFromUrl()) return false;
+        const modal = ensureTeacherRecoveryModal();
+        modal.style.display = 'flex';
+        setTimeout(() => {
+            try { modal.querySelector('#pet-teacher-recovery-password')?.focus(); } catch (_) {}
+        }, 30);
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+function ensureTeacherAccessOverlay() {
+    let overlay = document.querySelector('#pet-teacher-access-overlay');
+    if (overlay) return overlay;
+    overlay = document.createElement('div');
+    overlay.id = 'pet-teacher-access-overlay';
+    overlay.className = 'teacher-overlay hidden';
+    overlay.innerHTML = `
+      <div class="teacher-panel" role="dialog" aria-modal="true" aria-label="Acesso do professor" style="max-width: 620px; width: min(94vw, 620px);">
+        <div class="teacher-panel-header">
+          <div>
+            <h2>🔒 Acesso do Professor</h2>
+            <div class="teacher-help">Acesso exclusivo do professor.</div>
+          </div>
+          <button id="teacher-access-close" class="teacher-close" type="button" aria-label="Fechar">✕</button>
+        </div>
+        <div id="teacher-access-status" class="profile-inline-note" data-level="info">Digite somente a senha provisória do professor para continuar.</div>
+        <div id="teacher-first-access-box" class="teacher-panel-section">
+          <h3>Primeiro acesso</h3>
+          <p class="teacher-help">Valide a senha provisória. Depois, cadastre o professor.</p>
+          <div id="teacher-first-step-provisional">
+            <label class="tp-label">Senha provisória</label>
+            <input id="teacher-access-provisional" class="tp-input" type="password" maxlength="80" placeholder="Senha provisória do professor">
+            <div class="teacher-row" style="margin-top: 12px; gap: 8px; flex-wrap: wrap;">
+              <button id="teacher-access-validate-provisional" class="btn-action" type="button">Continuar</button>
+            </div>
+          </div>
+          <div id="teacher-first-step-form" class="hidden">
+            <div class="profile-inline-note" data-level="success" style="margin-bottom: 12px;">Senha validada. Preencha os dados do professor.</div>
+            <label class="tp-label">Nome completo</label>
+            <input id="teacher-access-fullname" class="tp-input" type="text" maxlength="160" placeholder="Nome completo">
+            <label class="tp-label">Escola</label>
+            <input id="teacher-access-school" class="tp-input" type="text" maxlength="180" placeholder="Nome da escola">
+            <label class="tp-label">Turma</label>
+            <input id="teacher-access-class" class="tp-input" type="text" maxlength="120" placeholder="Ex.: 7ºA, 801, 8º ano B">
+            <label class="tp-label">E-mail</label>
+            <input id="teacher-access-reg-email" class="tp-input" type="email" maxlength="180" placeholder="professor@exemplo.com">
+            <label class="tp-label">Nova senha</label>
+            <input id="teacher-access-reg-password" class="tp-input" type="password" maxlength="80" placeholder="Mínimo recomendado: 8 caracteres">
+            <label class="tp-label">Confirmar nova senha</label>
+            <input id="teacher-access-reg-password-confirm" class="tp-input" type="password" maxlength="80" placeholder="Repita a nova senha">
+            <div class="teacher-row" style="margin-top: 12px; gap: 8px; flex-wrap: wrap;">
+              <button id="teacher-access-register" class="btn-action" type="button">Cadastrar professor</button>
+              <button id="teacher-access-open-login" class="btn-action btn-secondary" type="button">Entrar</button>
+              <button id="teacher-access-reset-provisional" class="btn-action btn-secondary" type="button">Voltar</button>
+            </div>
+          </div>
+        </div>
+        <div id="teacher-signin-box" class="teacher-panel-section hidden">
+          <h3>Acesso do professor</h3>
+          <p class="teacher-help">Use esta opção se o professor já estiver cadastrado.</p>
+          <label class="tp-label">E-mail</label>
+          <input id="teacher-access-email" class="tp-input" type="email" maxlength="180" placeholder="professor@exemplo.com">
+          <label class="tp-label">Senha</label>
+          <input id="teacher-access-password" class="tp-input" type="password" maxlength="80" placeholder="Digite a senha cadastrada">
+          <div class="teacher-row" style="margin-top: 12px; gap: 8px; flex-wrap: wrap;">
+            <button id="teacher-access-signin" class="btn-action" type="button">Entrar</button>
+            <button id="teacher-access-recover" class="btn-action btn-secondary" type="button">Recuperar senha</button>
+            <button id="teacher-access-back-provisional" class="btn-action btn-secondary" type="button">Voltar</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const statusEl = overlay.querySelector('#teacher-access-status');
+    const setStatus = (message, level = 'info') => {
+        if (!statusEl) return;
+        statusEl.textContent = String(message || '');
+        statusEl.setAttribute('data-level', String(level || 'info'));
+    };
+    const setBusy = (busy) => {
+        overlay.querySelectorAll('button').forEach((btn) => { btn.disabled = !!busy; });
+    };
+    const close = (result = false) => {
+        overlay.classList.add('hidden');
+        overlay.setAttribute('aria-hidden', 'true');
+        if (__teacherAccessResolver) {
+            const resolver = __teacherAccessResolver;
+            __teacherAccessResolver = null;
+            resolver(!!result);
+        }
+    };
+    let teacherProvisionalValidated = false;
+    let teacherViewMode = 'provisional';
+    const syncFirstAccessSteps = () => {
+        const provisionalStep = overlay.querySelector('#teacher-first-step-provisional');
+        const formStep = overlay.querySelector('#teacher-first-step-form');
+        const firstBox = overlay.querySelector('#teacher-first-access-box');
+        const signinBox = overlay.querySelector('#teacher-signin-box');
+        const setHidden = (el, shouldHide) => {
+            if (!el) return;
+            el.hidden = !!shouldHide;
+            el.classList.toggle('hidden', !!shouldHide);
+            el.setAttribute('aria-hidden', shouldHide ? 'true' : 'false');
+            el.style.display = shouldHide ? 'none' : '';
+        };
+        setHidden(firstBox, teacherViewMode === 'signin');
+        setHidden(signinBox, teacherViewMode !== 'signin');
+        setHidden(provisionalStep, teacherProvisionalValidated || teacherViewMode === 'signin');
+        setHidden(formStep, !teacherProvisionalValidated || teacherViewMode === 'signin');
+    };
+    const resetFirstAccessFlow = () => {
+        teacherProvisionalValidated = false;
+        teacherViewMode = 'provisional';
+        const provisionalEl = overlay.querySelector('#teacher-access-provisional');
+        const fullNameEl = overlay.querySelector('#teacher-access-fullname');
+        const schoolEl = overlay.querySelector('#teacher-access-school');
+        const turmaEl = overlay.querySelector('#teacher-access-class');
+        const regEmailEl = overlay.querySelector('#teacher-access-reg-email');
+        const regPassEl = overlay.querySelector('#teacher-access-reg-password');
+        const regPassConfirmEl = overlay.querySelector('#teacher-access-reg-password-confirm');
+        const signinEmailEl = overlay.querySelector('#teacher-access-email');
+        const signinPassEl = overlay.querySelector('#teacher-access-password');
+        if (provisionalEl) provisionalEl.value = '';
+        if (fullNameEl) fullNameEl.value = '';
+        if (schoolEl) schoolEl.value = '';
+        if (turmaEl) turmaEl.value = '';
+        if (regEmailEl) regEmailEl.value = '';
+        if (regPassEl) regPassEl.value = '';
+        if (regPassConfirmEl) regPassConfirmEl.value = '';
+        if (signinEmailEl) signinEmailEl.value = '';
+        if (signinPassEl) signinPassEl.value = '';
+        syncFirstAccessSteps();
+    };
+    const showTeacherLogin = () => {
+        teacherViewMode = 'signin';
+        syncFirstAccessSteps();
+    };
+    const showTeacherProvisional = () => {
+        teacherViewMode = 'provisional';
+        syncFirstAccessSteps();
+    };
+    const applyHint = () => {
+        const hint = getTeacherAccessHintSafe();
+        const emailEl = overlay.querySelector('#teacher-access-email');
+        const regEmailEl = overlay.querySelector('#teacher-access-reg-email');
+        const nameEl = overlay.querySelector('#teacher-access-fullname');
+        const schoolEl = overlay.querySelector('#teacher-access-school');
+        const turmaEl = overlay.querySelector('#teacher-access-class');
+        if (emailEl && hint.email && !emailEl.value) emailEl.value = hint.email;
+        if (regEmailEl && hint.email && !regEmailEl.value) regEmailEl.value = hint.email;
+        if (nameEl && hint.full_name && !nameEl.value) nameEl.value = hint.full_name;
+        if (schoolEl && hint.school_name && !schoolEl.value) schoolEl.value = hint.school_name;
+        if (turmaEl && hint.turma_label && !turmaEl.value) turmaEl.value = hint.turma_label;
+    };
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) close(false);
+    });
+    overlay.querySelector('#teacher-access-close').addEventListener('click', () => close(false));
+    overlay.querySelector('#teacher-access-open-login').addEventListener('click', () => {
+        showTeacherLogin();
+        applyHint();
+        setStatus('Informe e-mail e senha do professor. Se precisar, use “Recuperar senha”.', 'info');
+    });
+    overlay.querySelector('#teacher-access-back-provisional').addEventListener('click', () => {
+        showTeacherProvisional();
+        setStatus('Digite somente a senha provisória do professor para continuar.', 'info');
+        try { overlay.querySelector('#teacher-access-provisional')?.focus(); } catch (_) {}
+    });
+    overlay.querySelector('#teacher-access-validate-provisional').addEventListener('click', () => {
+        const provisional = String(overlay.querySelector('#teacher-access-provisional')?.value || '');
+        if (provisional !== TEACHER_PROVISIONAL_PASSWORD) {
+            teacherProvisionalValidated = false;
+            syncFirstAccessSteps();
+            setStatus('Senha provisória incorreta. Tente novamente.', 'error');
+            return;
+        }
+        teacherProvisionalValidated = true;
+        syncFirstAccessSteps();
+        applyHint();
+        setStatus('Senha validada. Preencha os dados do professor.', 'success');
+    });
+    overlay.querySelector('#teacher-access-reset-provisional').addEventListener('click', () => {
+        teacherProvisionalValidated = false;
+        showTeacherProvisional();
+        setStatus('Digite somente a senha provisória do professor para continuar.', 'info');
+        try { overlay.querySelector('#teacher-access-provisional')?.focus(); } catch (_) {}
+    });
+    overlay.querySelector('#teacher-access-recover').addEventListener('click', async () => {
+        const email = String(overlay.querySelector('#teacher-access-email')?.value || overlay.querySelector('#teacher-access-reg-email')?.value || '').trim();
+        if (!isCloudFeatureConfigured()) {
+            setStatus('Configure o Supabase em js/pet-config.js antes de usar a recuperação de senha.', 'error');
+            return;
+        }
+        if (!email) {
+            setStatus('Informe o e-mail do professor para enviar a recuperação de senha.', 'error');
+            return;
+        }
+        try {
+            setBusy(true);
+            const result = await window.PETAuth.requestTeacherPasswordReset(email);
+            if (result?.error) throw result.error;
+            setStatus('Recuperação enviada por e-mail. Abra o link recebido para definir uma nova senha.', 'success');
+        } catch (err) {
+            setStatus(`Falha ao enviar a recuperação: ${String(err?.message || err)}`, 'error');
+        } finally {
+            setBusy(false);
+        }
+    });
+    overlay.querySelector('#teacher-access-signin').addEventListener('click', async () => {
+        const email = String(overlay.querySelector('#teacher-access-email')?.value || '').trim();
+        const password = String(overlay.querySelector('#teacher-access-password')?.value || '');
+        if (!isCloudFeatureConfigured()) {
+            setStatus('Configure o Supabase em js/pet-config.js antes de entrar.', 'error');
+            return;
+        }
+        if (!email || !password) {
+            setStatus('Informe e-mail e senha para entrar.', 'error');
+            return;
+        }
+        try {
+            setBusy(true);
+            const result = await window.PETAuth.signInTeacherWithEmail(email, password);
+            if (result?.error) throw result.error;
+            const teacherProfile = await window.PETCloudDriver.fetchTeacherProfileForCurrentUser();
+            if (!teacherProfile) {
+                try { await window.PETAuth.signOutTeacher(); } catch (_) {}
+                throw new Error('Professor ainda não cadastrado. Use “Primeiro acesso” para concluir o cadastro.');
+            }
+            __teacherCurrentProfile = teacherProfile;
+            saveTeacherAccessHint(teacherProfile);
+            setStatus('Acesso liberado.', 'success');
+            close(true);
+        } catch (err) {
+            __teacherCurrentProfile = null;
+            setStatus(mapTeacherAuthErrorToMessage(err, 'signin'), 'error');
+        } finally {
+            setBusy(false);
+        }
+    });
+    overlay.__resetFirstAccessFlow = resetFirstAccessFlow;
+    overlay.__setStatus = setStatus;
+    overlay.__showTeacherLogin = showTeacherLogin;
+    overlay.__showTeacherProvisional = showTeacherProvisional;
+    resetFirstAccessFlow();
+    setStatus('Digite somente a senha provisória do professor para continuar.', 'info');
+    overlay.querySelector('#teacher-access-register').addEventListener('click', async () => {
+        const provisional = String(overlay.querySelector('#teacher-access-provisional')?.value || '');
+        const fullName = String(overlay.querySelector('#teacher-access-fullname')?.value || '').trim();
+        const schoolName = String(overlay.querySelector('#teacher-access-school')?.value || '').trim();
+        const turmaLabel = String(overlay.querySelector('#teacher-access-class')?.value || '').trim();
+        const email = String(overlay.querySelector('#teacher-access-reg-email')?.value || '').trim();
+        const pass1 = String(overlay.querySelector('#teacher-access-reg-password')?.value || '');
+        const pass2 = String(overlay.querySelector('#teacher-access-reg-password-confirm')?.value || '');
+        if (!isCloudFeatureConfigured()) {
+            setStatus('Configure o Supabase em js/pet-config.js antes de cadastrar o professor.', 'error');
+            return;
+        }
+        if (!teacherProvisionalValidated || provisional !== TEACHER_PROVISIONAL_PASSWORD) {
+            teacherProvisionalValidated = false;
+            syncFirstAccessSteps();
+            setStatus('Valide a senha provisória antes de cadastrar o professor.', 'error');
+            return;
+        }
+        if (!fullName || !schoolName || !turmaLabel || !email) {
+            setStatus('Preencha nome completo, escola, turma e e-mail.', 'error');
+            return;
+        }
+        if (!pass1 || pass1.length < 8) {
+            setStatus('A nova senha deve ter pelo menos 8 caracteres.', 'error');
+            return;
+        }
+        if (pass1 !== pass2) {
+            setStatus('A confirmação da nova senha não confere.', 'error');
+            return;
+        }
+        try {
+            setBusy(true);
+            const signUpResult = await window.PETAuth.signUpTeacherWithEmail(email, pass1);
+            if (signUpResult?.error) throw signUpResult.error;
+            let teacherSession = await window.PETAuth.getTeacherSession();
+            if (!teacherSession) {
+                const signInResult = await window.PETAuth.signInTeacherWithEmail(email, pass1);
+                if (signInResult?.error) throw signInResult.error;
+                teacherSession = await window.PETAuth.getTeacherSession();
+            }
+            if (!teacherSession) {
+                setStatus('Cadastro iniciado. Confirme o e-mail para concluir o acesso.', 'success');
+                return;
+            }
+            const teacherProfile = await window.PETCloudDriver.registerTeacherAccess({
+                full_name: fullName,
+                school_name: schoolName,
+                turma_label: turmaLabel,
+                email
+            });
+            __teacherCurrentProfile = teacherProfile;
+            saveTeacherAccessHint(teacherProfile || { full_name: fullName, school_name: schoolName, turma_label: turmaLabel, email });
+            setStatus('Professor cadastrado com sucesso. Acesso liberado.', 'success');
+            close(true);
+        } catch (err) {
+            __teacherCurrentProfile = null;
+            setStatus(mapTeacherAuthErrorToMessage(err, 'signup'), 'error');
+        } finally {
+            setBusy(false);
+        }
+    });
+    return overlay;
+}
+async function requestTeacherPanelAccess() {
+    try {
+        if (isTeacherRecoveryModeFromUrl()) {
+            await maybeOpenTeacherRecoveryModal(true);
+            return false;
+        }
+        const overlay = ensureTeacherAccessOverlay();
+        overlay.classList.remove('hidden');
+        overlay.setAttribute('aria-hidden', 'false');
+        try {
+            const hint = getTeacherAccessHintSafe();
+            const emailEl = overlay.querySelector('#teacher-access-email');
+            const regEmailEl = overlay.querySelector('#teacher-access-reg-email');
+            if (emailEl && hint.email && !emailEl.value) emailEl.value = hint.email;
+            if (regEmailEl && hint.email && !regEmailEl.value) regEmailEl.value = hint.email;
+            if (typeof overlay.__resetFirstAccessFlow === 'function') overlay.__resetFirstAccessFlow();
+            if (typeof overlay.__setStatus === 'function') overlay.__setStatus('Digite somente a senha provisória do professor para continuar.', 'info');
+            overlay.querySelector('#teacher-access-provisional')?.focus();
+        } catch (_) {}
+        return await new Promise((resolve) => {
+            __teacherAccessResolver = resolve;
+        });
+    } catch (_) {
+        return false;
+    }
+}
+async function releaseTeacherPanelAccess() {
+    __teacherCurrentProfile = null;
+    try { await window.PETAuth?.signOutTeacher?.(); } catch (_) {}
+}
+function initTeacherAuthHooks() {
+    if (__teacherAuthHooksBound) return;
+    __teacherAuthHooksBound = true;
+    try {
+        if (window.PETAuth && window.PETAuth.onTeacherAuthStateChange) {
+            window.PETAuth.onTeacherAuthStateChange(async (_session, event) => {
+                try { if (event === 'PASSWORD_RECOVERY') await maybeOpenTeacherRecoveryModal(true); } catch (_) {}
+            });
+        }
+    } catch (_) {}
+}
+
 function initTeacherPanel() {
     // Evita duplicar
     if (document.getElementById('teacher-fab')) return;
@@ -5673,7 +6381,7 @@ function initTeacherPanel() {
     overlay.innerHTML = `
       <div class="teacher-panel" role="dialog" aria-modal="true" aria-label="Painel do Professor">
         <div class="teacher-panel-header">
-          <h2>Painel do Professor</h2>
+          <div><h2>Painel do Professor</h2><div id="tp-auth-badge" class="profile-inline-note" data-level="info">Acesso protegido do professor</div></div>
           <button id="tp-close" class="btn-secondary" type="button">Fechar</button>
         </div>
         <div class="teacher-panel-section">
@@ -5913,12 +6621,13 @@ function initTeacherPanel() {
     document.body.appendChild(overlay);
     const prefs = getTeacherPrefsSafe();
     let teacherPanelOpen = false;
-    const close = () => {
+    const close = async () => {
         if (!teacherPanelOpen) return;
         if (!petGuardAction('teacher-panel-close', 180)) return;
         overlay.classList.add('hidden');
         overlay.setAttribute('aria-hidden', 'true');
         teacherPanelOpen = false;
+        try { await releaseTeacherPanelAccess(); } catch (_) {}
     };
     const open = () => {
         if (teacherPanelOpen) return;
@@ -5926,28 +6635,46 @@ function initTeacherPanel() {
         overlay.classList.remove('hidden');
         overlay.setAttribute('aria-hidden', 'false');
         teacherPanelOpen = true;
+        try {
+            const badge = overlay.querySelector('#tp-auth-badge');
+            if (badge) {
+                const teacherName = String(__teacherCurrentProfile?.full_name || __teacherCurrentProfile?.display_name || '').trim();
+                const teacherTurma = String(__teacherCurrentProfile?.turma_label || '').trim();
+                badge.textContent = teacherName ? `${teacherName}${teacherTurma ? ` • ${teacherTurma}` : ''}` : 'Acesso protegido do professor';
+                badge.setAttribute('data-level', teacherName ? 'success' : 'info');
+            }
+        } catch (_) {}
         // Atualiza filtros/resumo do relatório quando abrir
         try { initCsvFiltersOnce(); } catch (_) {}
         try { updateCsvSummary(); } catch (_) {}
         try { refreshTeacherPedagogyControls(); } catch (_) {}
     };
-    bindGuardedClick(fab, 'teacher-panel-fab-toggle', () => {
-        if (teacherPanelOpen) close(); else open();
+    bindGuardedClick(fab, 'teacher-panel-fab-toggle', async () => {
+        if (teacherPanelOpen) {
+            await close();
+            return false;
+        }
+        const accessGranted = await requestTeacherPanelAccess();
+        if (!accessGranted) return false;
+        open();
         return false;
     }, { minIntervalMs: 300, bindToken: 'teacher-panel-fab-toggle' });
     overlay.addEventListener('click', (e) => {
         if (e.target === overlay) close();
     });
-    bindGuardedClick(overlay.querySelector('#tp-close'), 'teacher-panel-close-btn', () => {
-        close();
+    bindGuardedClick(overlay.querySelector('#tp-close'), 'teacher-panel-close-btn', async () => {
+        await close();
         return false;
     }, { minIntervalMs: 220, bindToken: 'teacher-panel-close-btn' });
     // Botão na Home (se existir) abre o painel do professor
     try {
         const homeBtn = document.getElementById('btn-open-teacher-panel');
         if (homeBtn) {
-            bindGuardedClick(homeBtn, 'teacher-panel-home-open', () => {
-                try { open(); } catch (_) {}
+            bindGuardedClick(homeBtn, 'teacher-panel-home-open', async () => {
+                try {
+                    const accessGranted = await requestTeacherPanelAccess();
+                    if (accessGranted) open();
+                } catch (_) {}
                 return false;
             }, { minIntervalMs: 420, bindToken: 'teacher-panel-home-open' });
         }
@@ -15575,8 +16302,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (_) {}
     // 1. Inicia direto no app e deixa o acesso/cadastro de perfil apenas no botão Perfil
     await bootstrapProfileAccess();
+    try { await enforceCloudIsolationForProfile(gameState.activeProfileId, { silent: true }); } catch (_) {}
     // 2. Carrega o estado do contexto atual (visitante por padrão ou perfil selecionado)
     loadProfileBoundState();
+    try { await maybeOpenCloudRecoveryModal(); } catch (_) {}
+    try { initTeacherAuthHooks(); } catch (_) {}
+    try { await maybeOpenTeacherRecoveryModal(); } catch (_) {}
     try { await runCloudBootstrapForCurrentProfile(); } catch (_) {}
     loadTeacherPrefs();
     initPWA();
