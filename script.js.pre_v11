@@ -284,9 +284,6 @@ const gameState = {
     attemptsThisQuestion: 0,
     maxAttemptsPerQuestion: 2,
     answerLocked: false,
-    questionAttemptStartedAt: 0,
-    sessionStartedAt: 0,
-    sessionKey: '',
     // Treino de erros
     isTrainingErrors: false,
     trainingQueue: [],
@@ -849,31 +846,6 @@ function loadSavedPetSession() {
 }
 function clearSavedPetSession() {
     try { profileStorageRemove(PET_SESSION_KEY); } catch (_) {}
-    try {
-        if (window.PETLocalDriver && window.PETLocalDriver.writeLocalGameSnapshot && gameState.activeProfileId) {
-            window.PETLocalDriver.writeLocalGameSnapshot(gameState.activeProfileId, null);
-        }
-    } catch (_) {}
-    try { scheduleCloudProgressSync(220); } catch (_) {}
-}
-function buildCloudProgressSnapshotForSync(profileId = null) {
-    const resolvedProfileId = profileId || gameState.activeProfileId || PROFILE_GUEST_ID;
-    const progress = loadPetProgress();
-    const currentSession = loadSavedPetSession();
-    const composed = {
-        ...(progress && typeof progress === 'object' ? JSON.parse(JSON.stringify(progress)) : {}),
-        updatedAt: new Date().toISOString(),
-        currentSession: (currentSession && typeof currentSession === 'object' && currentSession.isGameActive) ? JSON.parse(JSON.stringify(currentSession)) : null
-    };
-    try {
-        if (window.PETLocalDriver && window.PETLocalDriver.writeLocalProgress && resolvedProfileId) {
-            window.PETLocalDriver.writeLocalProgress(resolvedProfileId, composed);
-        }
-        if (window.PETLocalDriver && window.PETLocalDriver.writeLocalGameSnapshot && resolvedProfileId) {
-            window.PETLocalDriver.writeLocalGameSnapshot(resolvedProfileId, composed.currentSession || null);
-        }
-    } catch (_) {}
-    return composed;
 }
 function buildPetSessionSnapshot() {
     const q = gameState.currentQuestion;
@@ -969,34 +941,9 @@ function savePetSessionSnapshotNow() {
         if (!gameState.isGameActive || !gameState.currentQuestion) return;
         const snap = buildPetSessionSnapshot();
         profileStorageSetJson(PET_SESSION_KEY, snap);
-        try {
-            if (window.PETLocalDriver && window.PETLocalDriver.writeLocalGameSnapshot && gameState.activeProfileId) {
-                window.PETLocalDriver.writeLocalGameSnapshot(gameState.activeProfileId, snap);
-            }
-        } catch (_) {}
-        try { buildCloudProgressSnapshotForSync(); } catch (_) {}
-        try { scheduleCloudProgressSync(900); } catch (_) {}
     } catch (_) {}
 }
 let __petSessionSaveTimer = null;
-let __petCloudProgressSyncTimer = null;
-function scheduleCloudProgressSync(delay = 900) {
-    try {
-        if (__petCloudProgressSyncTimer) clearTimeout(__petCloudProgressSyncTimer);
-        __petCloudProgressSyncTimer = setTimeout(async () => {
-            __petCloudProgressSyncTimer = null;
-            try {
-                if (!isCloudFeatureConfigured || !isCloudFeatureConfigured()) return;
-                const ctx = (window.PETBridge && window.PETBridge.getActiveProfileContext) ? window.PETBridge.getActiveProfileContext() : null;
-                if (!ctx || !ctx.deviceProfileId || ctx.isGuest) return;
-                const session = await getCloudSessionSafe();
-                if (!session) return;
-                const payload = buildCloudProgressSnapshotForSync(ctx.deviceProfileId);
-                await queueCloudSyncForCurrentProfile('progress', payload);
-            } catch (_) {}
-        }, Math.max(120, Number(delay) || 900));
-    } catch (_) {}
-}
 function savePetSessionSoon() {
     try {
         if (__petSessionSaveTimer) clearTimeout(__petSessionSaveTimer);
@@ -1754,7 +1701,7 @@ function loadPetProgress() {
 function savePetProgress(p) {
     try {
         profileStorageSetJson(PET_PROGRESS_KEY, { ...p, updatedAt: Date.now() });
-        try { queueCloudSyncForCurrentProfile('progress', buildCloudProgressSnapshotForSync()); } catch (_) {}
+        try { queueCloudSyncForCurrentProfile('progress'); } catch (_) {}
     } catch (_) {}
 }
 function awardPetBadge(p, id) {
@@ -2732,8 +2679,6 @@ function recordPetCompletedSession({ sessionType = 'sessao', upd = null, bonusAp
         const diagSummary = buildSessionDiagnosticsSummary(gameState.sessionDiagnostics);
         const entry = {
             id: `${endedAt}-${Math.random().toString(16).slice(2)}`,
-            clientSessionId: String(gameState.sessionKey || `sessao-${gameState.sessionStartedAt || endedAt}`),
-            sessionKey: String(gameState.sessionKey || `sessao-${gameState.sessionStartedAt || endedAt}`),
             endedAt,
             dateKey: petDateKeyLocal(new Date(endedAt)),
             sessionType: String(sessionType || 'sessao'),
@@ -3004,7 +2949,7 @@ function refreshPetProgressMini() {
     chip.title = `Recorde: ${Number(p.bestStreak || 0)} dia(s) • Sessões: ${Number(p.totalSessions || 0)} • Questões: ${Number(p.totalAnswered || 0)}`;
 }
 // Home global capture desativado para evitar cliques duplicados.
-try { window.openPetAchievementsModalSafe = openPetAchievementsModalSafe; } catch (_) {}
+try { window.openPetAchievementsModal = openPetAchievementsModalSafe; } catch (_) {}
 function openPetAchievementsFallbackModal() {
     try {
         const p = loadPetProgress();
@@ -4131,11 +4076,7 @@ function ensureProfileUI() {
                 const authError = result?.error;
                 if (authError) throw authError;
                 await syncCloudProfileMetaForCurrentProfile();
-                const boot = await runCloudBootstrapForCurrentProfile();
-                if (boot?.mode === 'local-preferred') {
-                    await queueCloudSyncForCurrentProfile('progress', buildCloudProgressSnapshotForSync());
-                }
-                setProfileCloudUiMessage('Conta online criada. Perfil pronto para continuar deste dispositivo e sincronizar entre aparelhos.', 'success');
+                setProfileCloudUiMessage('Conta online criada. Verifique seu e-mail se o projeto exigir confirmação.', 'success');
                 await refreshProfileCloudUi();
             } catch (err) {
                 setProfileCloudUiMessage(`Falha ao criar conta: ${String(err?.message || err)}`, 'error');
@@ -4162,10 +4103,9 @@ function ensureProfileUI() {
                 await syncCloudProfileMetaForCurrentProfile();
                 const boot = await runCloudBootstrapForCurrentProfile();
                 if (boot?.mode === 'remote-preferred') {
-                    setProfileCloudUiMessage('Conta conectada e andamento mais recente carregado da nuvem.', 'success');
+                    setProfileCloudUiMessage('Conta conectada e progresso mais recente carregado da nuvem.', 'success');
                 } else {
-                    await queueCloudSyncForCurrentProfile('progress', buildCloudProgressSnapshotForSync());
-                    setProfileCloudUiMessage('Conta conectada. Este progresso local foi enviado para a nuvem para continuar em qualquer dispositivo.', 'success');
+                    setProfileCloudUiMessage('Conta conectada. Perfil local pronto para sincronizar.', 'success');
                 }
                 await refreshProfileCloudUi();
             } catch (err) {
@@ -4320,19 +4260,15 @@ async function queueCloudSyncForCurrentProfile(kind = 'progress', payload = null
         if (!window.PETBridge || !window.PETSync || !window.PETRepositories) return { mode: 'unavailable' };
         const ctx = window.PETBridge.getActiveProfileContext();
         if (!ctx || !ctx.deviceProfileId || ctx.isGuest) return { mode: 'guest-or-missing' };
-        if (kind === 'session' && payload) {
-            await window.PETRepositories.sessions.queueSync(ctx.deviceProfileId, payload);
-        } else if (kind === 'attempt' && payload && window.PETRepositories.attempts && window.PETRepositories.attempts.queueSync) {
-            await window.PETRepositories.attempts.queueSync(ctx.deviceProfileId, payload);
-        } else {
-            const snap = payload && typeof payload === 'object'
-                ? payload
-                : buildCloudProgressSnapshotForSync(ctx.deviceProfileId);
-            await window.PETRepositories.progress.queueSync(ctx.deviceProfileId, snap);
-        }
-        if (!(await getCloudSessionSafe())) return { mode: 'queued-local-no-session' };
+        if (!(await getCloudSessionSafe())) return { mode: 'local-only-no-session' };
         const profile = window.PETRepositories.profiles.readLocal(ctx.deviceProfileId, false);
         await window.PETRepositories.profiles.ensureCloudLinked(ctx.deviceProfileId, profile);
+        if (kind === 'session' && payload) {
+            await window.PETRepositories.sessions.queueSync(ctx.deviceProfileId, payload);
+        } else {
+            const snap = window.PETRepositories.progress.readLocalSnapshot(ctx.deviceProfileId, false);
+            await window.PETRepositories.progress.queueSync(ctx.deviceProfileId, snap);
+        }
         return await window.PETSync.syncNow();
     } catch (err) {
         console.warn('Falha ao sincronizar com a nuvem:', err);
@@ -4350,114 +4286,6 @@ async function syncCloudProfileMetaForCurrentProfile() {
     } catch (err) {
         console.warn('Falha ao vincular perfil local à nuvem:', err);
         return null;
-    }
-}
-function getCloudAttemptStageLabel(question) {
-    return String(
-        question?.masteryStageLabel ||
-        question?.consolidationStageLabel ||
-        question?.sourceStageLabel ||
-        question?.stageLabel ||
-        gameState.operationTrail?.currentStageLabel ||
-        ''
-    ).trim();
-}
-function buildCloudAttemptSkillCode(question) {
-    const operation = String(question?.operacao || gameState.currentOperation || '').toLowerCase().trim() || 'questao';
-    const learningType = String(question?.learningType || inferStageLearningType(operation, getCloudAttemptStageLabel(question)) || '').toLowerCase().trim();
-    const stageLabel = normalizeSkillStageLabel(getCloudAttemptStageLabel(question)).toLowerCase();
-    const base = stageLabel || learningType || 'geral';
-    return `${operation}::${base.replace(/\s+/g, '_').replace(/[^a-z0-9_:-]/g, '')}`.slice(0, 180);
-}
-function buildInProgressCloudSessionPayload() {
-    const now = Date.now();
-    const hits = Math.max(0, Number(gameState.acertos || 0));
-    const misses = Math.max(0, Number(gameState.erros || 0));
-    const answered = Math.max(0, hits + misses);
-    const accuracy = answered > 0 ? Math.round(((hits / answered) * 100) * 10) / 10 : null;
-    return {
-        id: String(gameState.sessionKey || `sessao-${gameState.sessionStartedAt || now}`),
-        clientSessionId: String(gameState.sessionKey || `sessao-${gameState.sessionStartedAt || now}`),
-        sessionKey: String(gameState.sessionKey || `sessao-${gameState.sessionStartedAt || now}`),
-        operation: String(gameState.currentOperation || ''),
-        level: String(gameState.currentLevel || ''),
-        levelLabel: petLevelLabel(gameState.currentLevel || ''),
-        mode: gameState.isRapidMode ? 'rapid' : 'study',
-        stageNo: (gameState.operationTrail && gameState.operationTrail.masteryMode)
-            ? (Number(gameState.operationTrail.currentStageIndex || 0) + 1)
-            : null,
-        stageLabel: getCloudAttemptStageLabel(gameState.currentQuestion),
-        startedAt: Number(gameState.sessionStartedAt || now),
-        endedAt: now,
-        answered,
-        hits,
-        misses,
-        accuracy,
-        score: Math.round(Number(gameState.score || 0)),
-        xpEarned: Math.max(0, Number(gameState.xpGainedRound || 0)),
-        metadata: {
-            inProgress: true,
-            appVersion: String(document.body.getAttribute('data-version') || ''),
-            source: 'attempt-flow'
-        }
-    };
-}
-function buildCloudAttemptPayload(question, selectedAnswer, isCorrect, extra = {}) {
-    const q = question && typeof question === 'object' ? question : {};
-    const diagnosis = !isCorrect ? getDistractorDiagnosis(q, selectedAnswer) : null;
-    const now = Date.now();
-    const attemptNo = Math.max(1, Number(extra.attemptNo || (Number(gameState.attemptsThisQuestion || 0) + 1) || 1));
-    const questionSeq = Math.max(1, Number(extra.questionNumber || gameState.questionNumber || 1));
-    const responseStartedAt = Number(extra.responseStartedAt || gameState.questionAttemptStartedAt || gameState.questionStartedAt || now);
-    const responseMs = Math.max(0, Number(extra.responseMs || (now - responseStartedAt) || 0));
-    const options = Array.isArray(q.options) ? q.options.map((value) => String(value)) : [];
-    const clientSessionId = String(gameState.sessionKey || `sessao-${gameState.sessionStartedAt || now}`);
-    const clientAttemptId = `${clientSessionId}::q${questionSeq}::a${attemptNo}::${String(q.operacao || gameState.currentOperation || 'questao')}`;
-    return {
-        clientAttemptId,
-        clientSessionId,
-        sessionPayload: buildInProgressCloudSessionPayload(),
-        operation: String(q.operacao || gameState.currentOperation || ''),
-        skillCode: buildCloudAttemptSkillCode(q),
-        stageLabel: getCloudAttemptStageLabel(q),
-        questionText: String(q.question || '').trim(),
-        presentedOptions: options,
-        studentAnswer: (selectedAnswer == null ? '' : String(selectedAnswer)),
-        correct: !!isCorrect,
-        responseMs,
-        errorCode: String(diagnosis?.code || ''),
-        metadata: {
-            attemptNo,
-            questionSeq,
-            level: String(gameState.currentLevel || ''),
-            mode: gameState.isRapidMode ? 'rapid' : 'study',
-            source: gameState.isDiagnosticMode ? 'diagnostic' : (gameState.isTrainingErrors ? 'training' : 'game'),
-            supportMode: String(q.supportMode || gameState.operationTrail?.supportMode || 'normal'),
-            usedAlternativeResponse: !!q.usedAlternativeResponse,
-            isBridgeQuestion: !!q.isBridgeQuestion,
-            bridgeFamily: String(q.bridgeFamily || ''),
-            learningType: String(q.learningType || ''),
-            stageIndex: Number.isFinite(Number(q.stageIndex)) ? Number(q.stageIndex) : null,
-            answer: Number.isFinite(Number(q.answer)) ? Number(q.answer) : q.answer,
-            num1: Number.isFinite(Number(q.num1)) ? Number(q.num1) : null,
-            num2: Number.isFinite(Number(q.num2)) ? Number(q.num2) : null,
-            selectedDistractorCode: String(diagnosis?.code || ''),
-            selectedDistractorLabel: String(diagnosis?.label || ''),
-            selectedDistractorFeedback: String(diagnosis?.feedback || ''),
-            appVersion: String(document.body.getAttribute('data-version') || '')
-        }
-    };
-}
-async function queueCloudAttemptForCurrentProfile(question, selectedAnswer, isCorrect, extra = {}) {
-    try {
-        if (!window.PETBridge || !window.PETRepositories || !window.PETRepositories.attempts) return { mode: 'unavailable' };
-        const ctx = window.PETBridge.getActiveProfileContext();
-        if (!ctx || !ctx.deviceProfileId || ctx.isGuest) return { mode: 'guest-or-missing' };
-        const payload = buildCloudAttemptPayload(question, selectedAnswer, isCorrect, extra);
-        return await queueCloudSyncForCurrentProfile('attempt', payload);
-    } catch (err) {
-        console.warn('Falha ao registrar tentativa na nuvem:', err);
-        return { mode: 'error', error: err };
     }
 }
 
@@ -7822,8 +7650,7 @@ function startErrorTraining() {
     nextTrainingQuestion();
 }
 function nextTrainingQuestion() {
-    const q = auditAndFixQuestionBeforeDisplay(gameState.trainingQueue[gameState.trainingIndex], { source: 'training' });
-    if (gameState.trainingQueue[gameState.trainingIndex]) gameState.trainingQueue[gameState.trainingIndex] = q;
+    const q = gameState.trainingQueue[gameState.trainingIndex];
     if (!q) {
         endTraining();
         return;
@@ -7831,8 +7658,6 @@ function nextTrainingQuestion() {
     gameState.questionNumber++;
     gameState.currentQuestion = q;
     gameState.attemptsThisQuestion = 0;
-    gameState.questionStartedAt = Date.now();
-    gameState.questionAttemptStartedAt = gameState.questionStartedAt;
     // UI
     questionCounter.textContent = `Treino: ${gameState.trainingIndex + 1}/${gameState.trainingQueue.length}`;
     questionText.textContent = q.question;
@@ -10664,9 +10489,6 @@ function handleDiagnosticAnswer(selectedAnswer, selectedButton) {
     if (gameState.answerLocked) return;
     const q = gameState.currentQuestion;
     if (!q) return;
-    const attemptNo = Math.max(1, Number(gameState.attemptsThisQuestion || 0) + 1);
-    const responseStartedAt = Number(gameState.questionAttemptStartedAt || gameState.questionStartedAt || Date.now());
-    const responseMs = Math.max(0, Date.now() - responseStartedAt);
     const isCorrect = selectedAnswer === q.answer;
     gameState.answerLocked = true;
     setTimeout(() => { gameState.answerLocked = false; }, 220);
@@ -10686,14 +10508,6 @@ function handleDiagnosticAnswer(selectedAnswer, selectedButton) {
         stageLabel: String(q.stageLabel || '').trim(),
         correct: !!isCorrect
     });
-    try {
-        queueCloudAttemptForCurrentProfile(q, selectedAnswer, isCorrect, {
-            attemptNo,
-            questionNumber: gameState.questionNumber,
-            responseStartedAt,
-            responseMs
-        });
-    } catch (_) {}
     setTimeout(() => {
         if (gameState.questionNumber >= gameState.totalQuestions) {
             endGame();
@@ -13125,7 +12939,6 @@ function startGame(operation, level, options = {}) {
     gameState.totalAnswerTimeMs = 0;
     gameState.questionsAnswered = 0;
     gameState.questionStartedAt = Date.now();
-    gameState.questionAttemptStartedAt = gameState.questionStartedAt;
     gameState.__summaryShown = false;
     gameState.__petProgressUpdate = null;
     gameState.__petStreakRewardApplied = false;
@@ -13265,35 +13078,17 @@ function escapeHtml(str) {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
 }
-function parseRepeatedAdditionExpression(questionText) {
-    const raw = String(questionText || '').replace(/\s*=\s*\?\s*$/, '').trim();
-    if (!raw || !/\+/.test(raw) || /[x×÷\-]|\^|²|³|√|∛/.test(raw)) return null;
-    const focus = /\bent[aã]o\b/i.test(raw) ? raw.split(/\bent[aã]o\b/i).pop().trim() : raw;
-    const parts = focus.split('+').map((part) => Number(String(part).trim())).filter((n) => Number.isFinite(n));
-    if (parts.length < 2) return null;
-    const unique = Array.from(new Set(parts));
-    if (unique.length !== 1) return null;
-    return {
-        addend: unique[0],
-        times: parts.length,
-        parts
-    };
-}
 function inferSemanticOperationFromQuestionText(questionText, fallback = '') {
     const raw = String(questionText || '').replace(/\s*=\s*\?\s*$/, '').trim();
     if (!raw) return String(fallback || '');
-    const normalizedFallback = String(fallback || '').trim();
     const focus = /\bent[aã]o\b/i.test(raw) ? raw.split(/\bent[aã]o\b/i).pop().trim() : raw;
-    const repeatedAddition = parseRepeatedAdditionExpression(focus);
-    if (repeatedAddition && normalizedFallback === 'multiplication') return 'multiplication';
     if (/∛|√/.test(focus)) return 'radiciacao';
     if (/÷/.test(focus)) return 'division';
     if (/\d\s*-\s*\d|\)\s*-\s*\d/.test(focus)) return 'subtraction';
     if (/\d\s*[x×]\s*\d/i.test(focus)) return 'multiplication';
     if (/\^|²|³/.test(focus)) return 'potenciacao';
-    if (repeatedAddition && normalizedFallback === 'addition') return 'addition';
     if (/\+/.test(focus)) return 'addition';
-    return normalizedFallback;
+    return String(fallback || '');
 }
 function auditQuestionPedagogicalConsistency(q) {
     const questionText = String(q?.question || '').replace(/\s*=\s*\?\s*$/, '').trim();
@@ -13345,8 +13140,7 @@ function getQuestionPedagogicalContext(q) {
     const isDecomposition = stage.includes('decomposição') || stage.includes('dezenas e unidades');
     const isMental = stage.includes('estratégias mentais') || stage.includes('mental') || /dobro|triplo|compensa/i.test(text);
     const isRemainder = stage.includes('resto') || /\(resto\)|resto|sobram?/i.test(text);
-    const repeatedAdditionInfo = parseRepeatedAdditionExpression(text);
-    const isRepeatedAddition = !!repeatedAdditionInfo && op === 'multiplication';
+    const isRepeatedAddition = /\+/.test(text) && op === 'multiplication';
     const isEqualGroups = /grupos de/i.test(text) || stage.includes('grupos iguais');
     const isExpandedPower = stage.includes('escrita expandida') || /×/.test(text) || /\^|²|³/.test(text);
     const isInverse = bridge || strategy === 'inverse-relation' || strategy === 'inverse-power' || strategy === 'inverse-root' || stage.includes('relação') || stage.includes('inversa');
@@ -13354,13 +13148,11 @@ function getQuestionPedagogicalContext(q) {
         audit, op, text, lower, stage, stageRaw, strategy, bridge, n1, n2, ans,
         isMissingTerm, isMissingFactor, isMissingDividend, isMissingDivisor,
         isEstimation, isContext, isComparison, isDecomposition, isMental,
-        isRemainder, isRepeatedAddition, isEqualGroups, isExpandedPower, isInverse,
-        repeatedAdditionInfo
+        isRemainder, isRepeatedAddition, isEqualGroups, isExpandedPower, isInverse
     };
 }
 function buildFacilitatedQuestionText(q) {
     if (!q) return '';
-    if (q.auditSupportOverrides && q.auditSupportOverrides.reading) return String(q.auditSupportOverrides.reading);
     const ctx = getQuestionPedagogicalContext(q);
     const { op, text, stage, n1, n2, ans } = ctx;
     if (op === 'addition') {
@@ -13382,13 +13174,7 @@ function buildFacilitatedQuestionText(q) {
     if (op === 'multiplication') {
         if (ctx.isMissingFactor && Number.isFinite(n1) && Number.isFinite(n2) && Number.isFinite(ans)) return `O produto já está dado. Descubra qual fator falta para completar a multiplicação.`;
         if (ctx.isEqualGroups && Number.isFinite(n1) && Number.isFinite(n2)) return `Organize ${n1} grupos com ${n2} em cada grupo e descubra o total.`;
-        if (ctx.isRepeatedAddition) {
-            const addend = Number(ctx?.repeatedAdditionInfo?.addend);
-            const times = Number(ctx?.repeatedAdditionInfo?.times);
-            return Number.isFinite(addend) && Number.isFinite(times)
-                ? `O ${addend} aparece ${times} vezes. Descubra quantos grupos existem e quanto há em cada grupo para trocar a soma repetida por multiplicação.`
-                : `Troque a soma repetida por uma multiplicação: conte quantos grupos aparecem e quanto há em cada grupo.`;
-        }
+        if (ctx.isRepeatedAddition) return `Troque a soma repetida por uma multiplicação: conte quantos grupos aparecem e quanto há em cada grupo.`;
         if (ctx.isMental) return /triplo/i.test(text) ? `Triplo é a mesma quantidade 3 vezes. Encontre uma vez e repita o raciocínio.` : `Use dobro, metade ou decomposição para multiplicar sem depender só da tabuada decorada.`;
         if (ctx.isContext) return `Leia o contexto e identifique quantidade de grupos e quantidade em cada grupo.`;
         if (Number.isFinite(n1) && Number.isFinite(n2)) return `Multiplique ${n1} por ${n2} pensando em grupos iguais.`;
@@ -13417,7 +13203,6 @@ function buildFacilitatedQuestionText(q) {
     return text;
 }
 function buildQuestionKeyword(q) {
-    if (q && q.auditSupportOverrides && q.auditSupportOverrides.keyword) return String(q.auditSupportOverrides.keyword);
     const ctx = getQuestionPedagogicalContext(q);
     if (ctx.bridge === 'addition-subtraction') return 'Palavra-chave: parte que falta';
     if (ctx.bridge === 'multiplication-division') return 'Palavra-chave: operação inversa';
@@ -13464,7 +13249,6 @@ function buildPartWholeVisualHtml(total, taken, rest, labels = {}) {
 }
 function buildQuestionVisualSupportHtml(q) {
     if (!q) return '';
-    if (q.auditSupportOverrides && q.auditSupportOverrides.visualHtml) return String(q.auditSupportOverrides.visualHtml);
     const ctx = getQuestionPedagogicalContext(q);
     const { op, text, stage, n1, n2, ans } = ctx;
     const stepCards = (...items) => `<div class="ils-place-grid">${items.filter(Boolean).map(([title, value]) => `<div class="ils-place-card"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(value)}</span></div>`).join('')}</div>`;
@@ -13475,7 +13259,7 @@ function buildQuestionVisualSupportHtml(q) {
         if (ctx.isEstimation && Number.isFinite(n1) && Number.isFinite(n2)) {
             const a10 = Math.round(n1 / 10) * 10;
             const b10 = Math.round(n2 / 10) * 10;
-            return `<div class="ils-visual-title">Estimativa da soma</div><div class="ils-visual-sub">Arredonde primeiro para prever um resultado provável.</div>${stepCards([`${n1} ≈`, a10], [`${n2} ≈`, b10], ['Montagem', `${a10} + ${b10}`])}`;
+            return `<div class="ils-visual-title">Estimativa da soma</div><div class="ils-visual-sub">Arredonde primeiro para prever um resultado provável.</div>${stepCards([`${n1} ≈`, a10], [`${n2} ≈`, b10], ['Estimativa', a10 + b10])}`;
         }
         if (ctx.isDecomposition && Number.isFinite(n1) && Number.isFinite(n2) && n1 <= 999 && n2 <= 999) {
             return `<div class="ils-visual-title">Somar por ordens</div><div class="ils-visual-sub">Separe os números antes de calcular.</div>${stepCards(['1º número', `${Math.floor(n1/100)}C ${Math.floor((n1%100)/10)}D ${n1%10}U`], ['2º número', `${Math.floor(n2/100)}C ${Math.floor((n2%100)/10)}D ${n2%10}U`], ['Pergunta', 'Quais partes podem ser somadas primeiro?'])}`;
@@ -13521,9 +13305,7 @@ function buildQuestionVisualSupportHtml(q) {
         }
         if (ctx.isRepeatedAddition && Number.isFinite(n1) && Number.isFinite(n2)) {
             const html = buildGroupedDotsHtml(n1, n2);
-            const addend = Number(ctx?.repeatedAdditionInfo?.addend);
-            const times = Number(ctx?.repeatedAdditionInfo?.times);
-            if (html) return `<div class="ils-visual-title">Da soma repetida para a multiplicação</div><div class="ils-visual-sub">Veja que a mesma quantidade se repete em grupos iguais.</div>${html}<div class="ils-caption">Pergunta-chave: ${Number.isFinite(addend) && Number.isFinite(times) ? `${addend} aparece ${times} vezes.` : 'Quantas vezes a quantidade se repete?'} </div>`;
+            if (html) return `<div class="ils-visual-title">Da soma para a multiplicação</div><div class="ils-visual-sub">A mesma quantidade se repete várias vezes.</div>${html}<div class="ils-caption">Pergunta-chave: quantas vezes a quantidade se repete?</div>`;
         }
         if (ctx.isMental && Number.isFinite(n1) && Number.isFinite(n2)) {
             return `<div class="ils-visual-title">Estratégia mental</div><div class="ils-visual-sub">Quebre o fator em partes conhecidas para calcular melhor.</div>${stepCards(['Fator 1', n1], ['Fator 2', n2], ['Pergunta', 'Posso usar dobro, metade ou decomposição?'])}`;
@@ -13545,8 +13327,10 @@ function buildQuestionVisualSupportHtml(q) {
             return `<div class="ils-visual-title">Divisor faltante</div><div class="ils-visual-sub">Veja o total e o resultado para descobrir o tamanho dos grupos.</div>${stepCards(['Total', n1], ['Divisor que falta', '?'], ['Pergunta', 'Qual tamanho de grupo faz a conta funcionar?'])}`;
         }
         if (Number.isFinite(n1) && Number.isFinite(n2) && n1 <= 24 && n2 <= 6 && n2 > 0) {
+            const per = Math.floor(n1 / n2);
             const rest = n1 % n2;
-            return `<div class="ils-visual-title">Repartição</div><div class="ils-visual-sub">Organize o total em grupos do mesmo tamanho sem antecipar quantos grupos completos aparecerão.</div>${stepCards(['Total', n1], ['Tamanho de cada grupo', n2], ['Pergunta', 'Quantos grupos completos cabem?'])}<div class="ils-caption">Monte os grupos um a um e observe ${rest ? 'se sobra resto.' : 'se fecha sem sobra.'}</div>`;
+            const groups = buildGroupedDotsHtml(n2, per, 24);
+            return `<div class="ils-visual-title">Repartição</div><div class="ils-visual-sub">Veja quantos itens entram em cada grupo e se sobra resto.</div>${groups}<div class="ils-caption">Monte os grupos completos e observe o que ainda sobra.</div>`;
         }
         if (Number.isFinite(n1) && Number.isFinite(n2) && Number.isFinite(ans)) {
             return `<div class="ils-visual-title">Conferência</div><div class="ils-visual-sub">Depois de dividir, confira pela multiplicação de volta sem revelar o resultado.</div>${stepCards(['Divisor', n2], ['Pergunta', 'Quociente × divisor volta ao total?'], ['Observação', (n1 % n2) ? 'Veja também o resto.' : 'Sem resto aparente.'])}`;
@@ -13569,324 +13353,6 @@ function buildQuestionVisualSupportHtml(q) {
     }
     return '';
 }
-function buildQuestionStrategicHintText(q) {
-    if (!q) return '';
-    if (q.auditSupportOverrides && q.auditSupportOverrides.hint) return String(q.auditSupportOverrides.hint);
-    const ctx = getQuestionPedagogicalContext(q);
-    const { op, text, n1, n2 } = ctx;
-    const addMissingA = text.match(/^\?\s*\+\s*(\d+)\s*=\s*(\d+)$/);
-    const addMissingB = text.match(/^(\d+)\s*\+\s*\?\s*=\s*(\d+)$/);
-    const subMissing = text.match(/^(\d+)\s*-\s*\?\s*=\s*(\d+)$/);
-    const multMissingA = text.match(/^\?\s*[x×]\s*(\d+)\s*=\s*(\d+)$/i);
-    const multMissingB = text.match(/^(\d+)\s*[x×]\s*\?\s*=\s*(\d+)$/i);
-    const divMissingDivisor = text.match(/^(\d+)\s*÷\s*\?\s*=\s*(\d+)$/i);
-    const divMissingDividend = text.match(/^\?\s*÷\s*(\d+)\s*=\s*(\d+)$/i);
-    if (ctx.bridge === 'addition-subtraction' && Number.isFinite(n1) && Number.isFinite(n2)) {
-        return `Use a operação inversa. A soma mostra o todo e a parte conhecida; transforme a ideia em ${n1} - ${n2} para descobrir a parte que falta.`;
-    }
-    if (ctx.bridge === 'multiplication-division' && Number.isFinite(n1) && Number.isFinite(n2)) {
-        return `Use a operação inversa. Volte para a multiplicação dada e pergunte se a divisão quer quantidade de grupos ou quanto cabe em cada grupo.`;
-    }
-    if (ctx.bridge === 'power-root' && Number.isFinite(n1)) {
-        return `Use a operação inversa da potência. Pergunte qual número gera ${n1} ao quadrado ou ao cubo, conforme o símbolo da raiz.`;
-    }
-    if (op === 'addition') {
-        if (addMissingA) return `Use a operação inversa para pensar melhor. Reescreva mentalmente como ${addMissingA[2]} - ${addMissingA[1]} e descubra a parcela que falta.`;
-        if (addMissingB) return `Use a operação inversa para pensar melhor. Reescreva mentalmente como ${addMissingB[2]} - ${addMissingB[1]} e descubra a parcela que falta.`;
-        if (ctx.isEstimation) return 'Não calcule tudo de uma vez. Arredonde primeiro, preveja um valor aproximado e elimine alternativas muito pequenas ou muito grandes.';
-        if (ctx.isContext) return 'Pergunte primeiro se as quantidades aumentam ou se duas partes precisam ser juntadas. Depois some por partes.';
-        if (ctx.isDecomposition) return 'Separe o número em ordens. Some centenas com centenas, dezenas com dezenas e unidades com unidades.';
-        return 'Some por etapas. Faça primeiro a parte mais fácil da conta e depois ajuste o que faltou.';
-    }
-    if (op === 'subtraction') {
-        if (subMissing) return `Use a operação inversa para testar o que falta. Pense em ${subMissing[2]} + ? = ${subMissing[1]}.`;
-        if (ctx.isComparison) return 'Não junte os números. Descubra qual é o maior, qual é o menor e complete do menor até o maior para achar a diferença.';
-        if (ctx.isContext) return 'Marque três ideias: total, o que sai e o que sobra. Só depois faça a conta.';
-        if (ctx.isMental) return 'Faça a retirada em duas partes: vá até uma dezena fácil e depois tire o restante.';
-        return 'Comece pelo total e retire por etapas, sem trocar a subtração por soma.';
-    }
-    if (op === 'multiplication') {
-        if (multMissingA) return `Use a operação inversa. Pense em ${multMissingA[2]} ÷ ${multMissingA[1]} para descobrir o fator que falta.`;
-        if (multMissingB) return `Use a operação inversa. Pense em ${multMissingB[2]} ÷ ${multMissingB[1]} para descobrir o fator que falta.`;
-        if (ctx.isRepeatedAddition) {
-            const addend = Number(ctx?.repeatedAdditionInfo?.addend);
-            const times = Number(ctx?.repeatedAdditionInfo?.times);
-            return Number.isFinite(addend) && Number.isFinite(times)
-                ? `Não some tudo como se fosse uma adição comum. Perceba que ${addend} se repete ${times} vezes e transforme isso em grupos iguais.`
-                : 'Conte quantas vezes a mesma quantidade aparece e transforme a soma repetida em multiplicação.';
-        }
-        if (ctx.isEqualGroups || ctx.isContext) return 'Visualize grupos iguais: quantos grupos existem e quantos elementos há em cada grupo?' ;
-        if (ctx.isMental) return 'Quebre um fator em partes conhecidas ou use dobro e metade para simplificar o cálculo.';
-        return 'Leia a multiplicação como grupos iguais, não como uma conta isolada.';
-    }
-    if (op === 'division') {
-        if (divMissingDivisor) return `Use a operação inversa. Pense em ${divMissingDivisor[2]} × ? = ${divMissingDivisor[1]}.`;
-        if (divMissingDividend) return `Use a operação inversa. Pense em ${divMissingDividend[2]} × ${divMissingDividend[1]} para reconstruir o total que falta.`;
-        if (ctx.isRemainder) return 'Primeiro veja quantos grupos completos cabem. Depois observe o que sobra sem formar outro grupo inteiro.';
-        if (ctx.isEstimation) return 'Procure múltiplos próximos do divisor para prever o quociente antes do cálculo exato.';
-        return 'Pergunte se a divisão quer quantidade de grupos ou tamanho de cada grupo. Essa decisão vem antes da conta.';
-    }
-    if (op === 'potenciacao') {
-        if (ctx.isMissingTerm) return 'Reescreva a potência como multiplicação repetida e descubra qual valor está faltando nessa repetição.';
-        return 'Troque a potência por multiplicação repetida antes de calcular. A base se repete o número de vezes indicado pelo expoente.';
-    }
-    if (op === 'radiciacao') {
-        if (ctx.isEstimation) return 'Localize o número entre quadrados ou cubos conhecidos para descobrir entre quais valores a raiz está.';
-        return 'Use a operação inversa da potência. Pergunte qual número, ao quadrado ou ao cubo, gera o valor dado.';
-    }
-    return 'Leia o que a questão pede, escolha a estratégia e só depois calcule.';
-}
-
-
-function buildAuditStepCards(...items) {
-    return `<div class="ils-place-grid">${items.filter(Boolean).map(([title, value]) => `<div class="ils-place-card"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(value)}</span></div>`).join('')}</div>`;
-}
-function stripAuditHtml(html) {
-    return String(html || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-}
-function containsWholeNumberText(text, value) {
-    const safe = String(text || '');
-    const token = String(value);
-    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`(^|[^0-9])${escaped}([^0-9]|$)`).test(safe);
-}
-function parseQuestionExpectedAnswer(q) {
-    const raw = String(q?.question || '').replace(/\s*=\s*\?\s*$/, '').trim();
-    if (!raw) return { resolved: false, answer: null, reason: 'empty-question' };
-    const txt = raw.replace(/−/g, '-').replace(/×/g, 'x').replace(/\s+/g, ' ').trim();
-    let m = txt.match(/^Se\s+(\d+)\s*\+\s*(\d+)\s*=\s*(\d+),\s*ent[aã]o\s*(\d+)\s*-\s*(\d+)$/i);
-    if (m) return { resolved: true, answer: Number(m[4]) - Number(m[5]), reason: 'bridge-add-sub' };
-    m = txt.match(/^Se\s+(\d+)\s*[x]\s*(\d+)\s*=\s*(\d+),\s*ent[aã]o\s*(\d+)\s*÷\s*(\d+)$/i);
-    if (m) return { resolved: true, answer: Number(m[4]) / Number(m[5]), reason: 'bridge-mult-div' };
-    m = txt.match(/^\?\s*\+\s*(\d+)\s*=\s*(\d+)$/);
-    if (m) return { resolved: true, answer: Number(m[2]) - Number(m[1]), reason: 'missing-add-left' };
-    m = txt.match(/^(\d+)\s*\+\s*\?\s*=\s*(\d+)$/);
-    if (m) return { resolved: true, answer: Number(m[2]) - Number(m[1]), reason: 'missing-add-right' };
-    m = txt.match(/^\?\s*-\s*(\d+)\s*=\s*(\d+)$/);
-    if (m) return { resolved: true, answer: Number(m[1]) + Number(m[2]), reason: 'missing-minuend' };
-    m = txt.match(/^(\d+)\s*-\s*\?\s*=\s*(\d+)$/);
-    if (m) return { resolved: true, answer: Number(m[1]) - Number(m[2]), reason: 'missing-subtrahend' };
-    m = txt.match(/^\?\s*[x]\s*(\d+)\s*=\s*(\d+)$/i);
-    if (m && Number(m[2]) % Number(m[1]) === 0) return { resolved: true, answer: Number(m[2]) / Number(m[1]), reason: 'missing-factor-left' };
-    m = txt.match(/^(\d+)\s*[x]\s*\?\s*=\s*(\d+)$/i);
-    if (m && Number(m[2]) % Number(m[1]) === 0) return { resolved: true, answer: Number(m[2]) / Number(m[1]), reason: 'missing-factor-right' };
-    m = txt.match(/^\?\s*÷\s*(\d+)\s*=\s*(\d+)$/i);
-    if (m) return { resolved: true, answer: Number(m[1]) * Number(m[2]), reason: 'missing-dividend' };
-    m = txt.match(/^(\d+)\s*÷\s*\?\s*=\s*(\d+)$/i);
-    if (m && Number(m[2]) !== 0 && Number(m[1]) % Number(m[2]) === 0) return { resolved: true, answer: Number(m[1]) / Number(m[2]), reason: 'missing-divisor' };
-    m = txt.match(/^(\d+)\s*\+\s*(\d+)\s*\+\s*(\d+)$/);
-    if (m) return { resolved: true, answer: Number(m[1]) + Number(m[2]) + Number(m[3]), reason: 'add-three' };
-    m = txt.match(/^(\d+)\s*\+\s*(\d+)\s*\+\s*(\d+)\s*\+\s*(\d+)$/);
-    if (m) return { resolved: true, answer: Number(m[1]) + Number(m[2]) + Number(m[3]) + Number(m[4]), reason: 'add-four' };
-    m = txt.match(/^(\d+)\s*\+\s*(\d+)$/);
-    if (m) return { resolved: true, answer: Number(m[1]) + Number(m[2]), reason: 'add-simple' };
-    m = txt.match(/^(\d+)\s*-\s*(\d+)$/);
-    if (m) return { resolved: true, answer: Number(m[1]) - Number(m[2]), reason: 'sub-simple' };
-    m = txt.match(/^(\d+)\s*[x]\s*(\d+)$/i);
-    if (m) return { resolved: true, answer: Number(m[1]) * Number(m[2]), reason: 'mult-simple' };
-    m = txt.match(/^(\d+)\s*÷\s*(\d+)\s*\(resto\)$/i);
-    if (m) return { resolved: true, answer: Number(m[1]) % Number(m[2]), reason: 'div-remainder-marked' };
-    m = txt.match(/^(\d+)\s*÷\s*(\d+)$/i);
-    if (m) return { resolved: true, answer: Number(m[1]) / Number(m[2]), reason: 'div-simple' };
-    m = txt.match(/^√(\d+)\s*\(aproximada\)$/i);
-    if (m) return { resolved: true, answer: Math.floor(Math.sqrt(Number(m[1]))), reason: 'root-approx-floor' };
-    m = txt.match(/^√(\d+)$/i);
-    if (m) return { resolved: true, answer: Math.sqrt(Number(m[1])), reason: 'root-square' };
-    m = txt.match(/^∛(\d+)$/i);
-    if (m) return { resolved: true, answer: Math.cbrt(Number(m[1])), reason: 'root-cube' };
-    m = txt.match(/^(\d+)(²|³)$/);
-    if (m) return { resolved: true, answer: Number(m[1]) ** ({'²':2,'³':3}[m[2]] || 2), reason: 'power-short' };
-    m = txt.match(/^(\d+) é quadrado perfeito de qual número$/i);
-    if (m) return { resolved: true, answer: Math.sqrt(Number(m[1])), reason: 'root-perfect-square' };
-    m = txt.match(/^Qual número multiplicado por ele mesmo dá (\d+)$/i);
-    if (m) return { resolved: true, answer: Math.sqrt(Number(m[1])), reason: 'root-self-product' };
-    m = txt.match(/^A área de um quadrado é (\d+)\. Qual é a medida do lado$/i);
-    if (m) return { resolved: true, answer: Math.sqrt(Number(m[1])), reason: 'root-square-area' };
-    m = txt.match(/^A raiz de (\d+) fica entre \d+ e \d+\. Qual é o valor exato$/i);
-    if (m) return { resolved: true, answer: Math.sqrt(Number(m[1])), reason: 'root-exact-between' };
-    m = txt.match(/^√(\d+) está entre \d+ e \d+\. Qual é a raiz inteira mais próxima por baixo$/i);
-    if (m) return { resolved: true, answer: Math.floor(Math.sqrt(Number(m[1]))), reason: 'root-floor-between' };
-    m = txt.match(/^(\d+) grupos de (\d+)$/i);
-    if (m) return { resolved: true, answer: Number(m[1]) * Number(m[2]), reason: 'equal-groups' };
-    m = txt.match(/^(\d+) caixas com (\d+) itens em cada uma\. Quantos itens há ao todo$/i);
-    if (m) return { resolved: true, answer: Number(m[1]) * Number(m[2]), reason: 'mult-context-boxes' };
-    m = txt.match(/^(\d+) itens foram organizados em (\d+) grupos iguais\. Quantos itens ficaram em cada grupo$/i);
-    if (m) return { resolved: true, answer: Number(m[1]) / Number(m[2]), reason: 'div-context-groups' };
-    m = txt.match(/^Em (\d+) ÷ (\d+), quantos grupos completos cabem antes de sobrar$/i);
-    if (m) return { resolved: true, answer: Math.floor(Number(m[1]) / Number(m[2])), reason: 'div-complete-groups' };
-    m = txt.match(/^(\d+) ÷ (\d+)\. Qual é o resto$/i);
-    if (m) return { resolved: true, answer: Number(m[1]) % Number(m[2]), reason: 'div-remainder-text' };
-    m = txt.match(/^Para somar (\d+) \+ (\d+), primeiro faça \1 \+ (\d+)\. Depois some quanto$/i);
-    if (m) return { resolved: true, answer: Number(m[2]) - Number(m[3]), reason: 'add-decomposition-remaining' };
-    m = txt.match(/^Para calcular (\d+) - (\d+), primeiro faça \1 - (\d+)\. Depois tire quanto$/i);
-    if (m) return { resolved: true, answer: Number(m[2]) - Number(m[3]), reason: 'sub-decomposition-remaining' };
-    m = txt.match(/^(\d+) x (\d+) = (\d+) x \2 \+ __\. Qual valor falta$/i);
-    if (m) return { resolved: true, answer: (Number(m[1]) - Number(m[3])) * Number(m[2]), reason: 'mult-distributive-missing' };
-    m = txt.match(/^(Dobro|Triplo|Qu[aá]druplo) de (\d+)$/i);
-    if (m) {
-        const factor = /dobro/i.test(m[1]) ? 2 : (/triplo/i.test(m[1]) ? 3 : 4);
-        return { resolved: true, answer: factor * Number(m[2]), reason: 'mult-word-factor' };
-    }
-    m = txt.match(/^(\d+), __$/);
-    if (m && Number.isFinite(Number(q?.num1))) return { resolved: true, answer: Number(q.answer), reason: 'skip-count-given' };
-    return { resolved: false, answer: null, reason: 'pattern-not-covered' };
-}
-function buildStrictSupportOverrides(q) {
-    const ctx = getQuestionPedagogicalContext(q);
-    const op = ctx.op;
-    const reading = (() => {
-        if (ctx.bridge === 'addition-subtraction') return 'A soma mostra o todo e uma das partes. A pergunta agora quer descobrir a outra parte usando subtração.';
-        if (ctx.bridge === 'multiplication-division') return 'A multiplicação mostra a relação entre total, grupos e quantidade em cada grupo. Use isso para entender a divisão pedida.';
-        if (ctx.bridge === 'power-root') return 'A potência aparece como pista. A pergunta final quer desfazer essa potência usando raiz.';
-        if (ctx.isRepeatedAddition) {
-            const addend = Number(ctx?.repeatedAdditionInfo?.addend);
-            const times = Number(ctx?.repeatedAdditionInfo?.times);
-            return Number.isFinite(addend) && Number.isFinite(times)
-                ? `A mesma quantidade se repete. O ${addend} aparece ${times} vezes. Leia isso como grupos iguais, não como adição comum.`
-                : 'A mesma quantidade se repete várias vezes. Conte quantos grupos aparecem e quanto há em cada grupo.';
-        }
-        if (op === 'addition' && ctx.isMissingTerm) return 'Uma parcela já apareceu e a outra está escondida. Use o total para descobrir a parte que falta.';
-        if (op === 'addition' && ctx.isEstimation) return 'A questão não pede conta exata. Primeiro aproxime os números e depois escolha o valor mais próximo.';
-        if (op === 'addition' && ctx.isContext) return 'Descubra quais quantidades aumentam ou se juntam. Só depois monte a soma.';
-        if (op === 'subtraction' && ctx.isComparison) return 'A pergunta quer a diferença entre dois valores. Compare o maior com o menor, sem juntar as quantidades.';
-        if (op === 'subtraction' && ctx.isMissingTerm) return 'A conta está incompleta. Pense no número que precisa ser tirado ou completado para a igualdade ficar correta.';
-        if (op === 'subtraction' && ctx.isContext) return 'Identifique o total, o que sai e o que sobra. A ordem dessas três ideias vem antes da conta.';
-        if (op === 'multiplication' && ctx.isEqualGroups) return 'Leia a situação como grupos iguais: quantos grupos existem e quantos elementos há em cada grupo.';
-        if (op === 'division' && ctx.isRemainder) return 'Monte primeiro os grupos completos. Depois observe o que sobra sem formar um grupo inteiro.';
-        if (op === 'division' && (ctx.isMissingDividend || ctx.isMissingDivisor)) return 'A divisão está incompleta. Use a relação com a multiplicação para reconstruir o valor que falta.';
-        if (op === 'potenciacao') return 'Leia a potência como repetição da mesma base. O expoente indica quantas vezes a base aparece.';
-        if (op === 'radiciacao' && ctx.isEstimation) return 'Localize o número entre quadrados ou cubos conhecidos antes de decidir a raiz mais próxima.';
-        if (op === 'radiciacao') return 'A raiz pergunta qual número gera o valor dado quando é multiplicado por ele mesmo.';
-        return buildFacilitatedQuestionText({ ...q, auditSupportOverrides: null });
-    })();
-    const keyword = (() => {
-        if (ctx.isRepeatedAddition) return 'Palavra-chave: soma repetida';
-        if (ctx.bridge === 'addition-subtraction') return 'Palavra-chave: parte que falta';
-        if (ctx.bridge === 'multiplication-division') return 'Palavra-chave: operação inversa';
-        if (ctx.bridge === 'power-root') return 'Palavra-chave: inversa da potência';
-        if (ctx.isMissingTerm) return 'Palavra-chave: termo faltante';
-        if (ctx.isMissingFactor) return 'Palavra-chave: fator faltante';
-        if (ctx.isMissingDividend) return 'Palavra-chave: dividendo faltante';
-        if (ctx.isMissingDivisor) return 'Palavra-chave: divisor faltante';
-        if (ctx.isComparison) return 'Palavra-chave: diferença';
-        if (ctx.isRemainder) return 'Palavra-chave: resto';
-        if (ctx.isEstimation) return 'Palavra-chave: estimativa';
-        return buildQuestionKeyword({ ...q, auditSupportOverrides: null });
-    })();
-    const visualHtml = (() => {
-        if (ctx.isRepeatedAddition) {
-            const groups = Number(ctx?.repeatedAdditionInfo?.times);
-            const size = Number(ctx?.repeatedAdditionInfo?.addend);
-            const html = buildGroupedDotsHtml(groups, size);
-            if (html) return `<div class="ils-visual-title">Mesma quantidade repetida</div><div class="ils-visual-sub">A soma pode ser lida como grupos iguais.</div>${html}<div class="ils-caption">Conte grupos e elementos por grupo antes de pensar no total.</div>`;
-        }
-        if (ctx.bridge === 'addition-subtraction' && Number.isFinite(ctx.n1) && Number.isFinite(ctx.n2)) return buildPartWholeVisualHtml(ctx.n1, ctx.n2, '?', { totalLabel: 'Todo', takenLabel: 'Parte conhecida', restLabel: 'Parte que falta' });
-        if (ctx.bridge === 'multiplication-division' && Number.isFinite(ctx.n1) && Number.isFinite(ctx.n2)) return buildPartWholeVisualHtml(ctx.n1, ctx.n2, '?', { totalLabel: 'Total', takenLabel: 'Em cada grupo', restLabel: 'Quantidade de grupos' });
-        if (ctx.isMissingTerm && Number.isFinite(ctx.n1)) return `<div class="ils-visual-title">Estrutura da igualdade</div><div class="ils-visual-sub">Uma parte aparece e a outra precisa ser descoberta.</div>${buildAuditStepCards(['Parte conhecida', ctx.n1], ['Parte faltante', '?'], ['Objetivo', 'Fazer a igualdade fechar'])}`;
-        if (ctx.isComparison && Number.isFinite(ctx.n1) && Number.isFinite(ctx.n2)) return `<div class="ils-visual-title">Comparar valores</div><div class="ils-visual-sub">Veja o maior, o menor e a distância entre eles.</div>${buildAuditStepCards(['Maior valor', Math.max(ctx.n1, ctx.n2)], ['Menor valor', Math.min(ctx.n1, ctx.n2)], ['Pergunta', 'Qual é a diferença?'])}`;
-        if (ctx.isRemainder && Number.isFinite(ctx.n1) && Number.isFinite(ctx.n2)) return `<div class="ils-visual-title">Grupos completos e sobra</div><div class="ils-visual-sub">Monte grupos do mesmo tamanho até não dar para formar outro grupo inteiro.</div>${buildAuditStepCards(['Total', ctx.n1], ['Tamanho do grupo', ctx.n2], ['Pergunta', 'O que sobra no final?'])}`;
-        if (op === 'potenciacao' && Number.isFinite(ctx.n1) && Number.isFinite(ctx.n2)) return `<div class="ils-visual-title">Base repetida</div><div class="ils-visual-sub">Leia a potência como multiplicação repetida.</div><div class="ils-expression">${Array.from({ length: Math.max(1, Math.min(5, ctx.n2 || 2)) }, () => String(ctx.n1)).join(' × ')}</div>`;
-        if (op === 'radiciacao' && Number.isFinite(ctx.n1)) return `<div class="ils-visual-title">Pergunta da raiz</div><div class="ils-visual-sub">Não procure o resultado final de uma vez. Procure o número que gera o valor dado.</div><div class="ils-expression">? × ? = ${escapeHtml(ctx.n1)}</div>`;
-        return buildQuestionVisualSupportHtml({ ...q, auditSupportOverrides: null });
-    })();
-    const hint = (() => {
-        if (ctx.isRepeatedAddition) return 'Transforme a soma repetida em multiplicação: quantidade de grupos × quantidade em cada grupo.';
-        if (ctx.bridge === 'addition-subtraction') return 'Use a operação inversa. A soma mostra o todo; a subtração serve para descobrir a parte que falta.';
-        if (ctx.bridge === 'multiplication-division') return 'Use a operação inversa. Volte para a multiplicação e decida se a divisão quer grupos ou quantidade em cada grupo.';
-        if (ctx.bridge === 'power-root') return 'Use a raiz para desfazer a potência. Pergunte qual número gera o valor dado.';
-        if (ctx.isMissingTerm && op === 'addition' && Number.isFinite(ctx.n1) && Number.isFinite(ctx.n2)) return 'Use a operação inversa: pegue o total e tire a parcela conhecida para descobrir a que falta.';
-        if (ctx.isMissingTerm && op === 'subtraction') return 'Teste a conta pela inversa: transforme a subtração incompleta em uma adição que confirme o valor faltante.';
-        if (ctx.isMissingFactor) return 'Use a operação inversa: transforme a multiplicação incompleta em divisão para achar o fator que falta.';
-        if (ctx.isMissingDividend || ctx.isMissingDivisor) return 'Use a relação divisão ↔ multiplicação para reconstruir o valor escondido sem adivinhar.';
-        if (ctx.isComparison) return 'Não some. Complete do menor até o maior ou subtraia o menor do maior para achar a diferença.';
-        if (ctx.isRemainder) return 'Conte apenas grupos completos. O resto é o que não consegue formar outro grupo inteiro.';
-        if (ctx.isEstimation) return 'Arredonde primeiro, estime e elimine alternativas incompatíveis antes de calcular com mais detalhe.';
-        return buildQuestionStrategicHintText({ ...q, auditSupportOverrides: null });
-    })();
-    return { reading, keyword, visualHtml, hint };
-}
-function auditQuestionSupportQuality(q) {
-    const keyword = buildQuestionKeyword({ ...q, auditSupportOverrides: null });
-    const reading = buildFacilitatedQuestionText({ ...q, auditSupportOverrides: null });
-    const visualHtml = buildQuestionVisualSupportHtml({ ...q, auditSupportOverrides: null });
-    const hint = buildQuestionStrategicHintText({ ...q, auditSupportOverrides: null });
-    const plainVisual = stripAuditHtml(visualHtml);
-    const bundle = `${keyword} ${reading} ${plainVisual} ${hint}`.toLowerCase();
-    const ctx = getQuestionPedagogicalContext(q);
-    const issues = [];
-    if (!String(reading || '').trim()) issues.push('reading-empty');
-    if (!String(hint || '').trim()) issues.push('hint-empty');
-    if (!String(visualHtml || '').trim()) issues.push('visual-empty');
-    if (/leitura útil/i.test(plainVisual)) issues.push('visual-generic-fallback');
-    if (/leia o problema/i.test(reading) || /leia o contexto/i.test(reading)) issues.push('reading-too-generic');
-    if (/leia o que a questão pede/i.test(hint)) issues.push('hint-too-generic');
-    if (ctx.isRepeatedAddition && /palavra-chave:\s*juntar/i.test(keyword)) issues.push('keyword-wrong-repeated-addition');
-    if (ctx.isRepeatedAddition && !/(soma repetida|grupos iguais|multiplica)/i.test(bundle)) issues.push('support-misses-repeated-addition');
-    if (ctx.op === 'subtraction' && !ctx.isMissingTerm && /(palavra-chave:\s*juntar|\bjunte\b|\bsome\b)/i.test(bundle)) issues.push('support-uses-addition-language-in-subtraction');
-    if (ctx.op === 'division' && /(palavra-chave:\s*juntar|\bjunte\b|\bsome\b)/i.test(bundle)) issues.push('support-uses-addition-language-in-division');
-    if (ctx.op === 'multiplication' && ctx.isEqualGroups && !/(grupo|repete|multiplica)/i.test(bundle)) issues.push('support-misses-groups-language');
-    return { keyword, reading, visualHtml, hint, issues };
-}
-function auditAndFixQuestionBeforeDisplay(question, ctx = {}) {
-    try {
-        if (!question || typeof question !== 'object') return question;
-        const q = question;
-        const issues = [];
-        const fixes = [];
-        const originalMetadata = String(q.operacao || q.semanticOperation || q.operationMetadata || '');
-        const semantic = inferSemanticOperationFromQuestionText(String(q.question || '').replace(/\s*=\s*\?\s*$/, ''), originalMetadata) || originalMetadata;
-        if (semantic && semantic !== originalMetadata) {
-            q.operacao = semantic;
-            q.semanticOperation = semantic;
-            fixes.push(`semantic-operation:${originalMetadata}->${semantic}`);
-        } else if (semantic) {
-            q.operacao = semantic;
-            q.semanticOperation = semantic;
-        }
-        const expected = parseQuestionExpectedAnswer(q);
-        if (expected.resolved && Number.isFinite(expected.answer) && Number(q.answer) !== Number(expected.answer)) {
-            q.answer = Number(expected.answer);
-            fixes.push(`answer:${expected.reason}`);
-        } else if (!expected.resolved) {
-            issues.push(`unparsed:${expected.reason}`);
-        }
-        const safeOp = String(q.operacao || q.semanticOperation || q.operationMetadata || gameState.currentOperation || '');
-        if (!Array.isArray(q.options) || new Set(q.options.map((v) => String(v))).size < 4 || !q.options.some((v) => Number(v) === Number(q.answer))) {
-            q.options = buildQuestionOptions(safeOp, Number(q.answer), {
-                num1: q.num1,
-                num2: q.num2,
-                stageLabel: q.stageLabel || q.masteryStageLabel || '',
-                questionString: String(q.question || '').replace(/\s*=\s*\?\s*$/, ''),
-                voiceQuestion: q.voiceQuestion || q.question || '',
-                level: gameState.currentLevel || ''
-            });
-            q.voiceOptions = q.options;
-            fixes.push('options-rebuilt');
-        }
-        const supportAudit = auditQuestionSupportQuality(q);
-        if (supportAudit.issues.length) {
-            q.auditSupportOverrides = buildStrictSupportOverrides(q);
-            fixes.push(`support-overrides:${supportAudit.issues.join('|')}`);
-        }
-        const leakText = `${String(q.auditSupportOverrides?.reading || supportAudit.reading || '')} ${stripAuditHtml(String(q.auditSupportOverrides?.visualHtml || supportAudit.visualHtml || ''))} ${String(q.auditSupportOverrides?.hint || supportAudit.hint || '')}`;
-        if (Number.isFinite(Number(q.answer)) && containsWholeNumberText(leakText, Number(q.answer)) && !/\?|falta|parte|grupo|quadrado|cubo|total/i.test(leakText)) {
-            q.auditSupportOverrides = buildStrictSupportOverrides(q);
-            fixes.push('support-rebuilt-anti-leak');
-        }
-        q.deliveryAudit = {
-            source: String(ctx.source || 'runtime'),
-            semanticOperation: String(q.operacao || q.semanticOperation || ''),
-            expectedAnswerReason: expected.reason,
-            issues,
-            fixes,
-            checkedAt: Date.now()
-        };
-        return q;
-    } catch (_) {
-        return question;
-    }
-}
-
 function getSupportRouteBadge(q) {
     const trail = gameState.operationTrail || {};
     const mode = normalizeAdaptiveSupportMode(q?.supportMode || trail.supportMode || 'normal');
@@ -13912,25 +13378,6 @@ function setInclusiveLearningExpanded(expanded) {
         body.hidden = !isExpanded;
         body.setAttribute('aria-hidden', !isExpanded ? 'true' : 'false');
     }
-    if (!isExpanded) {
-        ['reading', 'visual', 'hint'].forEach((section) => setInclusiveLearningSectionExpanded(panel, section, false));
-    }
-}
-function setInclusiveLearningSectionExpanded(panel, section, expanded) {
-    const root = panel || document.getElementById('inclusive-learning-panel');
-    if (!root) return;
-    const toggle = root.querySelector(`[data-inclusive-toggle="${section}"]`);
-    const body = root.querySelector(`[data-inclusive-body="${section}"]`);
-    const isExpanded = !!expanded;
-    if (toggle) {
-        toggle.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
-        toggle.classList.toggle('is-open', isExpanded);
-    }
-    if (body) {
-        body.classList.toggle('hidden', !isExpanded);
-        body.hidden = !isExpanded;
-        body.setAttribute('aria-hidden', !isExpanded ? 'true' : 'false');
-    }
 }
 function ensureInclusiveLearningPanel() {
     let panel = document.getElementById('inclusive-learning-panel');
@@ -13944,35 +13391,25 @@ function ensureInclusiveLearningPanel() {
     panel.dataset.expanded = 'false';
     panel.innerHTML = `
       <button type="button" class="inclusive-learning-toggle" id="inclusive-learning-toggle" aria-expanded="false">
-        Leitura facilitada, pista visual e dica
+        Leitura facilitada e pista visual
       </button>
       <div class="info-card inclusive-learning-body hidden" id="inclusive-learning-body" hidden aria-hidden="true">
         <div class="inclusive-learning-header">
-          <strong>🧩 Apoios da questão</strong>
-          <button type="button" class="inclusive-learning-close" id="inclusive-learning-close" aria-label="Fechar apoios da questão">×</button>
+          <strong>🧩 Leitura facilitada e pista visual</strong>
+          <button type="button" class="inclusive-learning-close" id="inclusive-learning-close" aria-label="Fechar leitura facilitada e pista visual">×</button>
         </div>
         <div class="inclusive-learning-head">
           <span class="inclusive-learning-badge" id="inclusive-route-badge">Leitura e representação da questão</span>
           <span class="inclusive-learning-keyword" id="inclusive-keyword-badge">Palavra-chave</span>
         </div>
-        <div class="inclusive-learning-sections">
-          <div class="inclusive-learning-section" data-section="reading">
-            <button type="button" class="inclusive-section-toggle" data-inclusive-toggle="reading" aria-expanded="false">Leitura facilitada</button>
-            <div class="inclusive-section-body hidden" data-inclusive-body="reading" hidden aria-hidden="true">
-              <p id="inclusive-reading-text"></p>
-            </div>
+        <div class="inclusive-learning-grid">
+          <div class="inclusive-learning-card">
+            <span class="inclusive-learning-label">Leitura facilitada</span>
+            <p id="inclusive-reading-text"></p>
           </div>
-          <div class="inclusive-learning-section" data-section="visual">
-            <button type="button" class="inclusive-section-toggle" data-inclusive-toggle="visual" aria-expanded="false">Pista visual</button>
-            <div class="inclusive-section-body hidden" data-inclusive-body="visual" hidden aria-hidden="true">
-              <div id="inclusive-visual-html"></div>
-            </div>
-          </div>
-          <div class="inclusive-learning-section" data-section="hint">
-            <button type="button" class="inclusive-section-toggle" data-inclusive-toggle="hint" aria-expanded="false">Dica estratégica</button>
-            <div class="inclusive-section-body hidden" data-inclusive-body="hint" hidden aria-hidden="true">
-              <p id="inclusive-strategic-hint"></p>
-            </div>
+          <div class="inclusive-learning-card">
+            <span class="inclusive-learning-label">Pista visual</span>
+            <div id="inclusive-visual-html"></div>
           </div>
         </div>
       </div>`;
@@ -13989,15 +13426,6 @@ function ensureInclusiveLearningPanel() {
         ev.stopPropagation();
         setInclusiveLearningExpanded(false);
     });
-    panel.querySelectorAll('[data-inclusive-toggle]').forEach((btn) => {
-        btn.addEventListener('click', (ev) => {
-            ev.preventDefault();
-            ev.stopPropagation();
-            const section = String(btn.getAttribute('data-inclusive-toggle') || '').trim();
-            const isOpen = btn.getAttribute('aria-expanded') === 'true';
-            setInclusiveLearningSectionExpanded(panel, section, !isOpen);
-        });
-    });
     return panel;
 }
 function renderInclusiveLearningPanel(q) {
@@ -14012,7 +13440,6 @@ function renderInclusiveLearningPanel(q) {
     const keywordEl = panel.querySelector('#inclusive-keyword-badge');
     const readingEl = panel.querySelector('#inclusive-reading-text');
     const visualEl = panel.querySelector('#inclusive-visual-html');
-    const hintEl = panel.querySelector('#inclusive-strategic-hint');
     if (routeEl) routeEl.textContent = getSupportRouteBadge(q);
     if (keywordEl) keywordEl.textContent = buildQuestionKeyword(q);
     if (readingEl) readingEl.textContent = buildFacilitatedQuestionText(q);
@@ -14020,11 +13447,9 @@ function renderInclusiveLearningPanel(q) {
         const html = buildQuestionVisualSupportHtml(q);
         visualEl.innerHTML = html || '<div class="ils-visual-sub">Nomeie o que a questão pede, destaque a relação entre os números e só depois calcule.</div>';
     }
-    if (hintEl) hintEl.textContent = buildQuestionStrategicHintText(q);
     panel.classList.remove('hidden');
     panel.hidden = false;
     setInclusiveLearningExpanded(false);
-    ['reading', 'visual', 'hint'].forEach((section) => setInclusiveLearningSectionExpanded(panel, section, false));
 }
 function ensureAlternativeResponsePanel() {
     let panel = document.getElementById('alternative-response-panel');
@@ -14169,11 +13594,9 @@ function nextQuestion() {
     gameState.questionNumber++;
     
     // 1. Gerar nova questão 
-    const newQ = auditAndFixQuestionBeforeDisplay(generateQuestion(gameState.currentOperation), { source: 'next-question' });
+    const newQ = generateQuestion(gameState.currentOperation);
     gameState.currentQuestion = newQ;
     gameState.attemptsThisQuestion = 0;
-    gameState.questionStartedAt = Date.now();
-    gameState.questionAttemptStartedAt = gameState.questionStartedAt;
 // 2. Atualizar UI
     questionCounter.textContent = buildQuestionCounterLabel();
     questionText.textContent = newQ.question;
@@ -14313,9 +13736,6 @@ function handleAnswer(selectedAnswer, selectedButton) {
         handleDiagnosticAnswer(selectedAnswer, selectedButton);
         return;
     }
-    const attemptNo = Math.max(1, Number(gameState.attemptsThisQuestion || 0) + 1);
-    const responseStartedAt = Number(gameState.questionAttemptStartedAt || gameState.questionStartedAt || Date.now());
-    const responseMs = Math.max(0, Date.now() - responseStartedAt);
     // Prioridade 2: tempo por questão (conta apenas na 1ª tentativa)
     try {
         if (Number(gameState.attemptsThisQuestion || 0) === 0) {
@@ -14380,14 +13800,6 @@ function handleAnswer(selectedAnswer, selectedButton) {
         playerScoreElement.textContent = `${gameState.score} Pontos`;
         recordPriority3RoundOutcome(q, true, selectedAnswer);
         recordOperationTrailQuestionResolution(q, true);
-        try {
-            queueCloudAttemptForCurrentProfile(q, selectedAnswer, true, {
-                attemptNo,
-                questionNumber: gameState.questionNumber,
-                responseStartedAt,
-                responseMs
-            });
-        } catch (_) {}
         // Prioridade 1: persiste andamento após acerto
         try { savePetSessionSoon(); } catch (_) {}
         // Se acertou, repõe o tempo total para a próxima questão
@@ -14418,16 +13830,7 @@ function handleAnswer(selectedAnswer, selectedButton) {
         return;
     }
     // ERRO
-    try {
-        queueCloudAttemptForCurrentProfile(q, selectedAnswer, false, {
-            attemptNo,
-            questionNumber: gameState.questionNumber,
-            responseStartedAt,
-            responseMs
-        });
-    } catch (_) {}
     gameState.attemptsThisQuestion++;
-    gameState.questionAttemptStartedAt = Date.now();
     // Salva erro (mesmo que depois acerte, isso ajuda a mapear as dificuldades)
     gameState.erros++;
     atualizarXP(-2);

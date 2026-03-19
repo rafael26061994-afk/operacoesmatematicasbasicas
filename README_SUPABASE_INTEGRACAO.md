@@ -1,102 +1,126 @@
-# PET + Supabase Starter v1
+# PET + Supabase — arquitetura pronta (v2)
 
-Este pacote foi montado para o projeto atual do PET (`index.html` + `script.js` monolítico) sem exigir reescrita completa.
+Este pacote agora contém a **base real** da integração com Supabase para o PET.
 
-## Objetivo
+## O que entrou de fato
 
-1. Manter o app **offline-first**.
-2. Preservar **modo visitante** e **PIN local**.
-3. Adicionar **conta online opcional** para backup e sincronização.
-4. Preparar o caminho para futura camada por turma/professor/escola.
+### Banco e segurança
+- `supabase-schema.sql`
+  - tabelas do aluno, progresso, sessões, tentativas, domínio por habilidade, turmas e matrículas
+  - funções auxiliares de segurança
+  - trigger para criar `profiles` ao cadastrar usuário no Auth
+  - políticas RLS para aluno, professor e admin
 
-## O que tem aqui
+### Camada JavaScript adicionada
+- `js/pet-config.js`
+- `js/pet-config.example.js`
+- `js/pet-local-driver.js`
+- `js/pet-auth.js`
+- `js/pet-cloud-driver.js`
+- `js/pet-sync.js`
+- `js/pet-repositories.js`
+- `js/pet-bridge.js`
 
-- `supabase-schema.sql` — tabelas e políticas RLS mínimas.
-- `js/pet-config.js` — configuração global.
-- `js/pet-local-driver.js` — acesso padronizado ao storage local.
-- `js/pet-auth.js` — autenticação Supabase.
-- `js/pet-cloud-driver.js` — persistência na nuvem.
-- `js/pet-sync.js` — fila local e sincronização.
-- `js/pet-repositories.js` — repositórios para perfil, progresso e sessões.
-- `js/pet-bridge.js` — ponte para encaixar no projeto atual sem quebrar a UI.
+## O que esta camada resolve
 
-## Ordem correta de implantação
+1. mantém o app **offline-first**
+2. preserva o **perfil local por dispositivo**
+3. adiciona **conta online** para backup e continuidade entre dispositivos
+4. separa **dados locais** de **persistência cloud**
+5. prepara o caminho para **professor / turma / relatórios**
 
-### Fase 1 — sem mudar o visual
+## Modelo de acesso
 
-1. Copie a pasta `js/` para o projeto.
-2. Adicione os scripts no `index.html` **antes** do `script.js` atual:
+### Aluno
+Pode:
+- ver e editar o próprio `student_profile`
+- ver e editar o próprio `student_progress`
+- inserir e consultar as próprias `game_sessions`
+- inserir e consultar as próprias `attempts`
+- ver o próprio `skill_mastery`
+- ver as próprias turmas em `classes` via matrícula
 
-```html
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="js/pet-config.js"></script>
-<script src="js/pet-local-driver.js"></script>
-<script src="js/pet-auth.js"></script>
-<script src="js/pet-cloud-driver.js"></script>
-<script src="js/pet-sync.js"></script>
-<script src="js/pet-repositories.js"></script>
-<script src="js/pet-bridge.js"></script>
-<script src="script.js"></script>
+Não pode:
+- ver dados de outro aluno
+- mudar o próprio papel para professor/admin
+- usar chave `service_role`
+
+### Professor
+Pode:
+- criar e editar as próprias `classes`
+- gerenciar `student_enrollments` das próprias turmas
+- ler progresso, sessões, tentativas e domínio dos alunos vinculados às suas turmas
+
+Não pode:
+- ver turmas de outro professor
+- alterar dados fora das próprias turmas
+
+### Admin
+Pode:
+- ver tudo
+- promover papéis
+- operar manutenção
+
+## Passo a passo de implantação
+
+### 1) Criar projeto no Supabase
+- criar um projeto novo
+- habilitar Auth por e-mail/senha
+- abrir o SQL Editor
+- rodar `supabase-schema.sql`
+
+### 2) Configurar o front
+Preencha `js/pet-config.js` com:
+- `supabaseUrl`
+- `supabaseAnonKey`
+
+Ou copie `js/pet-config.example.js` para `js/pet-config.js`.
+
+### 3) Promover conta de professor/admin quando precisar
+Exemplo:
+
+```sql
+update public.profiles
+set role = 'teacher'
+where auth_user_id = 'UUID_DO_USUARIO';
 ```
 
-3. No `pet-config.js`, preencha:
-   - `supabaseUrl`
-   - `supabaseAnonKey`
+### 4) Fluxo atual do PET
+O `index.html` já carrega os scripts da camada Supabase antes de `script.js`.
 
-4. Crie o projeto no Supabase e rode o SQL de `supabase-schema.sql`.
+Hoje o que já fica funcional sem refatorar a UI inteira:
+- cadastro online
+- login online
+- vínculo do perfil local com a conta online
+- fila local de sincronização
+- sincronização do snapshot de progresso
+- sincronização do histórico de sessões
+- bootstrap básico do progresso cloud para o dispositivo atual
 
-### Fase 2 — começar a usar os repositórios
+## Limite honesto
 
-Substitua acessos diretos como:
+Isto é **arquitetura pronta e encaixada**, não migração total do monólito.
 
-```js
-profileStorageSetJson(PET_PROGRESS_KEY, payload)
-```
+O `script.js` principal já conversa com:
+- `window.PETAuth`
+- `window.PETRepositories`
+- `window.PETSync`
+- `window.PETBridge`
 
-por:
+Mas ainda não grava **cada tentativa individual** no banco porque isso exigiria interceptar o ponto exato de resposta no motor principal.
+A estrutura já está preparada para isso no schema (`attempts`).
 
-```js
-window.PETRepositories.progress.saveLocalSnapshot(activeProfileId, payload)
-```
+## Próximo passo técnico correto
 
-E gravação de histórico por:
+1. validar login e vínculo do perfil local
+2. validar sync do progresso e das sessões
+3. só depois ligar gravação de `attempts` e `skill_mastery`
 
-```js
-window.PETRepositories.sessions.appendLocal(activeProfileId, sessionData)
-```
+Isso evita quebrar o jogo inteiro por tentar migrar tudo de uma vez.
 
-### Fase 3 — sincronização real
 
-Depois que o login estiver funcionando:
-
-- ao finalizar rodada: `enqueueProgressSync` + `enqueueSessionSync`
-- ao abrir o app: `bootstrapForCurrentProfile()`
-- ao clicar em “Sincronizar”: `syncNow()`
-
-## Decisão arquitetural
-
-- **PIN local** continua existindo para laboratório/dispositivo compartilhado.
-- **Conta online** é separada do PIN.
-- **Visitante** continua sem nuvem.
-- **Local é a fonte imediata**. A nuvem entra como backup e continuidade.
-
-## Onde encaixar no seu código atual
-
-No seu `script.js`, hoje os dados principais estão em chaves como:
-
-- `matemagica_profile_v1`
-- `pet_progress_v1`
-- `pet_session_history_v1`
-- `pet_session_v1`
-
-Você já tem escopo por perfil. Isso é bom. O próximo passo não é reescrever a interface; é parar de espalhar acesso a storage em toda parte.
-
-## Regra obrigatória
-
-A partir da migração, não crie novas leituras/escritas diretas em `localStorage` para progresso, sessões e perfil. Passe tudo pelos repositórios.
-
-## Limite deste pacote
-
-Este pacote **não conecta automaticamente** todo o seu `script.js` atual. Ele entrega a fundação correta.
-
-Motivo: seu arquivo atual é monolítico. Automatizar tudo agora aumentaria o risco de quebrar funcionalidades que já existem.
+## Atualização v15 — tentativas por questão
+- Cada resposta do aluno agora gera um registro em `public.attempts`.
+- O envio usa `client_attempt_id` único para evitar duplicação em retries de sync.
+- Cada tentativa referencia a sessão cloud por `client_session_id`/`game_session_id`.
+- Se o aluno estiver sem login no momento, a tentativa fica na fila local e sobe depois.
