@@ -1,0 +1,39 @@
+/versao_otimizada/
+
+ATIVIDADE 5 (VERSÃO AJUSTADA)
+
+🔹 Trecho original:
+Mapeamento de erro concentrado principalmente no feedback após resposta.
+
+🔹 Trecho ajustado:
+Mapeamento preventivo adicionado no apoio da questão, com:
+- rótulo do erro provável
+- causa provável
+- retomada recomendada
+
+🔹 Justificativa da alteração:
+- Foi mantido o feedback pós-resposta.
+- Foi adicionada apenas uma camada preventiva para reduzir erro mecânico antes da tentativa.
+
+BLOCO PEDAGÓGICO:
+- Erros comuns + causas
+  - Agora apresentados por operação e contexto.
+- Explicações (nível 1, 2 e 3)
+  - Compreensão, resolução e conferência passam a ficar visíveis.
+- Tutor inteligente (fluxo de ajuda)
+  - Nomear a tarefa → escolher estratégia → tentar outro caminho.
+
+BLOCO DE ACESSIBILIDADE:
+- Organização em blocos curtos.
+- Linguagem direta.
+- Apoio textual compatível com leitura guiada.
+
+BLOCO DE GAMIFICAÇÃO:
+- Mecânica aplicada + objetivo pedagógico
+  - O estudante passa a enxergar a missão da etapa e a evitar chute.
+  - Objetivo: reforçar autocorreção e autonomia.
+
+BLOCO PARA PROFESSOR:
+- Diagnóstico + intervenção recomendada
+  - Os erros agora ficam mais traduzíveis em intervenção prática.
+  - Intervenção: selecionar a causa dominante e propor retomada de 1 passo antes de avançar.

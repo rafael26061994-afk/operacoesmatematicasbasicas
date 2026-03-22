@@ -250,6 +250,10 @@ function ensureTouchClick(el){
 }
 // Badge flutuante: Progresso do ciclo (Tabuada)
 let cycleProgressBadge = null;
+let cycleProgressBadgeContent = null;
+let cycleProgressBadgeCloseBtn = null;
+let cycleProgressBadgeLastText = "";
+let cycleProgressBadgeDismissedText = "";
 // Cache de elementos de erro
 const btnTreinarErros = document.getElementById('btn-treinar-erros');
 const errorCountMessage = document.getElementById('error-count-message');
@@ -269,7 +273,7 @@ const gameState = {
     questionNumber: 0,
     totalQuestions: 20, 
     isVoiceReadActive: false,
-    isRapidMode: true,
+    isRapidMode: false,
     errors: [], 
     highScores: [], 
     // Timer (Modo Rápido)
@@ -628,33 +632,52 @@ function explainSteps(operation, num1, num2) {
             return `Passo 1: tente de novo com calma.`;
     }
 }
-function showPedagogicalFeedback(isCorrect, operation, q, selectedValue) {
-    // Regras:
-    // - Modo Rápido: 15s ou até acabar o tempo ou acertar/seguir para a próxima.
-    // - Modo Estudo: fica visível até o usuário responder novamente.
+function showPedagogicalFeedback(isCorrect, operation, q, selectedValue, opts = {}) {
     const isRapid = !!gameState.isRapidMode;
     const DURATION_RAPID = 15000;
+    const resolvedOperation = getResolvedFeedbackOperation(operation, q);
+    const flow = getAdaptiveLearningFlowMeta(q, { attempts: Number(gameState.attemptsThisQuestion || 0) });
+    const stageInsight = getCurrentQuestionStageDiagnostic(q);
     if (isCorrect) {
-        showFeedbackControlled('✅ Correto! Boa! Continue.', 'success', 2500);
+        const challenge = String(stageInsight?.focus?.checkpoint || stageInsight?.focus?.studentMove || getPriority3AlternativePathText(q) || '').trim();
+        const domainTxt = String(stageInsight?.domain?.stateLabel || '').trim();
+        let successMsg = '✅ Correto!';
+        if (!isRapid) {
+            if (flow.attempts === 0 && flow.supportMode === 'normal') successMsg += ' Boa leitura da estratégia.';
+            else successMsg += ' Você reorganizou o raciocínio e conseguiu.';
+            if (domainTxt) successMsg += ` Domínio atual: ${domainTxt}.`;
+            if (challenge) successMsg += ` Próximo desafio: ${challenge}`;
+        }
+        showFeedbackControlled(successMsg.trim(), 'success', isRapid ? 2500 : 5200);
         return;
     }
     const diagnosis = getDistractorDiagnosis(q, selectedValue) || null;
     const typicalError = diagnosis?.label || classifyTypicalError(q, selectedValue);
-    const targetedHint = String(diagnosis?.feedback || '').trim();
-    const genericRapid = explainAnswer(operation, q?.num1, q?.num2, q?.answer, selectedValue);
-    const genericStudy = explainSteps(operation, q?.num1, q?.num2);
-    const targeted = typicalError && typicalError !== 'Erro de cálculo ou atenção nesta habilidade.'
-        ? typicalError
+    const dimension = inferErrorDimension(q, diagnosis);
+    const targeted = typicalError && typicalError !== 'Erro de cálculo ou atenção nesta habilidade.' ? typicalError : '';
+    const hint = buildOperationSpecificPedagogicalHint(resolvedOperation, q, selectedValue, isRapid);
+    const nextStep = (!isRapid && stageInsight && stageInsight.focus && String(stageInsight.focus.studentMove || '').trim())
+        ? ` Próximo passo: ${String(stageInsight.focus.studentMove || '').trim()}`
         : '';
-    const baseHint = isRapid ? genericRapid : genericStudy;
-    const hint = targetedHint || baseHint;
-    const msg = targeted
-        ? `${targeted} ${hint}`.trim()
-        : hint;
-    if (isRapid) {
-        showFeedbackControlled('💡 Dica rápida: ' + msg, 'incentive', DURATION_RAPID);
+    const strategy = String(getPriority3StrategyText(q) || '').trim();
+    const alternative = String(getPriority3AlternativePathText(q) || buildQuestionStrategicHintText(q) || '').trim();
+    let msg = targeted
+        ? `Erro de ${dimension.toLowerCase()}: ${targeted} ${hint}`.trim()
+        : `${hint}`;
+    let prefix = '💡 Dica rápida: ';
+    if (!isRapid && flow.tier >= 2) {
+        prefix = '🧭 Explicação guiada: ';
+        msg = `${msg} Organize assim: ${strategy}`.trim();
+    }
+    if (!isRapid && flow.tier >= 3) {
+        prefix = '🧩 Explicação completa: ';
+        msg = `${msg} Organize assim: ${strategy}. Faça em etapas: ${alternative}`.trim();
+    }
+    msg = `${msg}${nextStep}`.trim();
+    if (isRapid || flow.tier === 1) {
+        showFeedbackControlled(prefix + msg, 'incentive', DURATION_RAPID);
     } else {
-        showFeedbackControlled('👩‍🏫 Passo a passo: ' + msg, 'incentive', 600000);
+        showFeedbackControlled(prefix + msg, 'incentive', 600000);
         window.__keepFeedbackUntilNextAnswer = true;
     }
 }
@@ -782,6 +805,10 @@ const PET_ONBOARD_KEY = 'pet_onboarded_v1';
 const PET_LAST_SUMMARY_KEY = 'pet_last_summary_v1';
 // --- Prioridade 3: Sequência (streak) + Conquistas (medalhas) ---
 const PET_PROGRESS_KEY = 'pet_progress_v1';
+const PET_HOME_PREFS_KEY = 'pet_home_prefs_v1';
+const PET_DAILY_MISSION_KEY = 'pet_daily_mission_v1';
+const PET_DAILY_MISSION_REWARD_XP = 40;
+const PET_DAILY_MISSION_REWARD_HINTS = 3;
 // --- Prioridade 6: Histórico de sessões + Exportar CSV (Relatório) ---
 const PET_SESSION_HISTORY_KEY = 'pet_session_history_v1';
 const PET_SESSION_HISTORY_MAX = 500; // limite de sessões guardadas (neste dispositivo)
@@ -789,9 +816,9 @@ const PET_SESSION_HISTORY_MAX = 500; // limite de sessões guardadas (neste disp
 // ✅ Para mudar os valores do bônus, altere SOMENTE aqui.
 // Ex.: { days: 3, xp: 15 } -> dá +15 XP quando bater 3 dias seguidos.
 const PET_STREAK_REWARD_RULES = [
-    { days: 3, xp: 10 },
-    { days: 7, xp: 25 },
-    { days: 14, xp: 50 }
+    { days: 3, xp: 15 },
+    { days: 7, xp: 35 },
+    { days: 14, xp: 70 }
 ];
 function getPetStreakRewardForStreak(streakDays) {
     try {
@@ -1026,7 +1053,7 @@ function getResultPerformanceExplanation() {
     const levelLabel = petLevelLabel(gameState.currentLevel).toLowerCase();
     const modeLabel = gameState.isRapidMode ? 'modo rápido' : 'modo estudo';
     if (total === 0) {
-        return 'Esta rodada terminou sem respostas registradas. Volte à Home e tente novamente com calma.';
+        return 'Esta rodada terminou sem respostas registradas. Volte à tela inicial e tente novamente com calma.';
     }
     if (accuracy >= 90) {
         return `Excelente desempenho: você acertou ${hits} de ${total} questões (${accuracy}%) em ${opLabel}, no nível ${levelLabel}, e mostrou domínio bem consistente.`;
@@ -1037,7 +1064,245 @@ function getResultPerformanceExplanation() {
     if (accuracy >= 50) {
         return `Desempenho mediano: foram ${hits} acertos e ${misses} erros (${accuracy}%). O melhor próximo passo é revisar esta habilidade no ${modeLabel} para reduzir os erros antes de acelerar.`;
     }
-    return `Esta rodada mostrou que ${opLabel} ainda precisa de reforço: foram ${hits} acertos e ${misses} erros (${accuracy}%). O mais indicado agora é voltar para a Home e retomar com apoio mais guiado.`;
+    return `Esta rodada mostrou que ${opLabel} ainda precisa de reforço: foram ${hits} acertos e ${misses} erros (${accuracy}%). O mais indicado agora é continuar no mesmo nível com apoio mais guiado.`;
+}
+function getResultLevelContinuationMeta() {
+    const operation = String(gameState.currentOperation || '');
+    const currentLevel = String(gameState.currentLevel || '');
+    const trail = gameState.operationTrail && typeof gameState.operationTrail === 'object' ? gameState.operationTrail : null;
+    const levels = getOperationLevelOrder(operation);
+    const currentIndex = Array.isArray(levels) ? levels.indexOf(currentLevel) : -1;
+    const nextLevel = currentIndex >= 0 ? String(levels[currentIndex + 1] || '') : '';
+    const states = operation ? computeOperationLevelPedagogicalStates(operation) : {};
+    const currentState = states && typeof states === 'object' ? (states[currentLevel] || null) : null;
+    const nextResolved = nextLevel ? resolveRequestedPedagogicalLevel(operation, nextLevel) : null;
+    const nextLevelUnlocked = !!(nextLevel && nextResolved && !nextResolved.blocked && nextResolved.level === nextLevel && currentState?.code === 'mastered');
+    const stages = getOperationTrailStages(operation, currentLevel) || [];
+    const unlockQuestionMeta = getLevelUnlockQuestionCounterMeta(operation, currentLevel, { trail, state: currentState });
+    let badge = currentState?.badge || '📘 Em progresso';
+    let ruleText = getLevelUnlockRuleText(operation, currentLevel, stages, true);
+    if (unlockQuestionMeta) {
+        ruleText = `${ruleText} ${unlockQuestionMeta.note}`.trim();
+    }
+    let statusText = currentState?.detail || `Nível ${petLevelLabel(currentLevel)} em andamento.`;
+    let nextText = currentState?.recommendation || '';
+    let continueLabel = 'Continuar neste nível';
+    if (gameState.isRapidMode && operation === 'multiplication') {
+        const totalAnswered = Math.max(0, Number(gameState.acertos || 0) + Number(gameState.erros || 0));
+        const accuracyRapid = totalAnswered > 0 ? Math.round((Number(gameState.acertos || 0) / totalAnswered) * 100) : 0;
+        const totalTarget = Math.max(0, Number(gameState.totalQuestions || 0));
+        const completedLevel = totalTarget > 0 && totalAnswered >= totalTarget;
+        const passedLevel = completedLevel && accuracyRapid >= 80;
+        const levelLabel = petLevelLabel(currentLevel, { isRapidMode: true });
+        ruleText = `Regra do ${levelLabel}: acertar no mínimo 80% do total de ${totalTarget || totalAnswered} questões deste nível no Modo Rápido.`;
+        if (passedLevel) {
+            badge = currentLevel === 'advanced' ? '🏆 Trilha superada' : '✅ Nível liberado';
+            statusText = `${levelLabel}: ${gameState.acertos}/${totalAnswered} acertos (${accuracyRapid}%). Critério de 80% cumprido.`;
+            if (currentLevel === 'advanced') {
+                nextText = 'Você superou a trilha da multiplicação no Modo Rápido.';
+                continueLabel = 'Jogar novamente este nível';
+            } else {
+                nextText = nextLevel ? `${petLevelLabel(nextLevel, { isRapidMode: true })} liberado para o Modo Rápido.` : 'Nível concluído com sucesso.';
+                continueLabel = 'Jogar novamente este nível';
+            }
+        } else {
+            const faltam = completedLevel ? Math.max(0, Math.ceil(totalAnswered * 0.8) - Number(gameState.acertos || 0)) : Math.max(0, totalTarget - totalAnswered);
+            badge = currentState?.badge || '📘 Em progresso';
+            statusText = completedLevel
+                ? `${levelLabel}: ${gameState.acertos}/${totalAnswered} acertos (${accuracyRapid}%). Ainda não alcançou os 80% exigidos.`
+                : `${levelLabel}: ${totalAnswered}/${totalTarget} questões concluídas nesta rodada.`;
+            nextText = completedLevel
+                ? `Refaça este nível no Modo Rápido. Ainda faltam ${faltam} acerto${faltam === 1 ? '' : 's'} para chegar aos 80%.`
+                : `Feche as ${Math.max(0, totalTarget - totalAnswered)} quest${Math.max(0, totalTarget - totalAnswered) === 1 ? 'ão' : 'ões'} restantes do nível para validar o critério de 80%.`;
+            continueLabel = 'Continuar neste nível';
+        }
+    } else if (trail && trail.masteryMode) {
+        const req = getMasteryStageRequirementMeta(trail);
+        const totalStages = Math.max(1, Number(trail.totalStages) || 1);
+        const last = trail.lastStageResult && typeof trail.lastStageResult === 'object' ? trail.lastStageResult : null;
+        if (req) {
+            ruleText = `Regra desta etapa: responda ${req.targetQuestions} questões e acerte pelo menos ${req.requiredCorrect} (${req.targetAccuracyPct}%). Não é pela pontuação final; é pelo bloco da etapa.`;
+        }
+        if (trail.consolidationMode && last?.consolidation) {
+            badge = last.passed ? '✅ Consolidação validada' : '🟡 Consolidação pendente';
+            statusText = `Consolidação do nível ${petLevelLabel(currentLevel)}: ${last.correct}/${last.asked} acertos (${last.accuracy}%).`;
+            nextText = last.passed
+                ? (nextLevelUnlocked ? `Próximo nível liberado: ${petLevelLabel(nextLevel)}.` : 'Nível validado com sucesso.')
+                : (last.weakStageLabel
+                    ? `Antes de subir, retome a etapa ${Number(last.weakStageIndex) + 1}: ${last.weakStageLabel}.`
+                    : 'Antes de subir, refaça a consolidação deste nível.');
+            continueLabel = last.passed ? 'Reforçar este nível' : 'Tentar a consolidação novamente';
+        } else if (last) {
+            const stageNo = Math.max(1, Number(last.currentStage ?? trail.currentStageIndex ?? 0) + 1);
+            const stageName = String(last.stageName || trail.currentStageLabel || gameState.currentQuestion?.masteryStageLabel || 'Etapa atual');
+            if (last.passed) {
+                badge = '✅ Etapa concluída';
+                statusText = `Você fechou a etapa ${stageNo}/${totalStages} — ${stageName} com ${last.correct}/${last.asked} acertos (${last.accuracy}%). A regra continua sendo 80% em cada etapa.`;
+                if (stageNo >= totalStages) {
+                    nextText = `A próxima rodada deste mesmo nível vai abrir a prova de consolidação.${unlockQuestionMeta ? ` Depois dela, faltam ${Math.max(0, Number(unlockQuestionMeta.remainingConsolidation || 0))} questões da consolidação para validar o nível.` : ''}`;
+                    continueLabel = 'Ir para a consolidação';
+                } else {
+                    nextText = `A próxima rodada deste mesmo nível abre a etapa ${Math.min(totalStages, stageNo + 1)}/${totalStages}.${unlockQuestionMeta ? ` Para liberar o próximo nível, ainda faltam pelo menos ${unlockQuestionMeta.remainingTotal} questões no caminho total.` : ''}`;
+                    continueLabel = 'Continuar para a próxima etapa';
+                }
+            } else {
+                badge = '📘 Etapa em progresso';
+                statusText = `Nesta etapa, você fez ${last.correct}/${last.asked} acertos (${last.accuracy}%). O avanço só acontece com 80% de aproveitamento no bloco da etapa.`;
+                nextText = req
+                    ? (req.remainingCorrect > 0
+                        ? `Ainda faltam ${req.remainingCorrect} acerto${req.remainingCorrect === 1 ? '' : 's'} para chegar a ${req.requiredCorrect}/${req.targetQuestions} (80%) e faltam ${req.remainingQuestions} quest${req.remainingQuestions === 1 ? 'ão' : 'ões'} para fechar a etapa.`
+                        : `Você já bateu os acertos mínimos de 80%. Agora precisa fechar o bloco de ${req.targetQuestions} questões com consistência. ${unlockQuestionMeta ? `No caminho total do nível, ainda faltam ${unlockQuestionMeta.remainingTotal} questões mínimas.` : ''}`)
+                    : (currentState?.recommendation || 'Continue neste nível até estabilizar a habilidade.');
+                continueLabel = 'Continuar neste nível';
+            }
+        }
+    } else if (currentState?.code === 'mastered' && nextLevelUnlocked) {
+        badge = '✅ Próximo nível liberado';
+        nextText = `Você já pode seguir para ${petLevelLabel(nextLevel)} sem voltar à tela inicial. Critério cumprido: 80% nas etapas e consolidação validada.`;
+        continueLabel = 'Jogar novamente este nível';
+    }
+    return {
+        operation,
+        currentLevel,
+        nextLevel,
+        nextLevelUnlocked,
+        badge,
+        ruleText,
+        statusText,
+        nextText,
+        continueLabel,
+        currentState,
+        unlockQuestionMeta
+    };
+}
+
+function buildManualResultProgressPayload() {
+    const total = Math.max(0, Number(gameState.acertos || 0) + Number(gameState.erros || 0));
+    const hits = Math.max(0, Number(gameState.acertos || 0));
+    const misses = Math.max(0, Number(gameState.erros || 0));
+    const accuracy = total > 0 ? Math.round((hits / total) * 1000) / 10 : 0;
+    const meta = getResultLevelContinuationMeta();
+    return {
+        at: Date.now(),
+        operation: gameState.currentOperation || '',
+        operationLabel: formatOperationLabel(gameState.currentOperation || ''),
+        level: gameState.currentLevel || '',
+        levelLabel: petLevelLabel(gameState.currentLevel || ''),
+        mode: gameState.isRapidMode ? 'rapid' : 'study',
+        score: Number(gameState.score || 0),
+        hits,
+        misses,
+        answered: total,
+        accuracy,
+        xpTotal: Number(gameState.xp || 0),
+        xpGainedRound: Number(gameState.xpGainedRound || 0),
+        studentProfile: { ...(getStudentProfile() || {}) },
+        progression: meta ? {
+            badge: meta.badge || '',
+            ruleText: meta.ruleText || '',
+            statusText: meta.statusText || '',
+            nextText: meta.nextText || '',
+            currentLevel: meta.currentLevel || '',
+            nextLevel: meta.nextLevel || '',
+            nextLevelUnlocked: !!meta.nextLevelUnlocked,
+            unlockQuestionMeta: meta.unlockQuestionMeta ? { ...meta.unlockQuestionMeta } : null
+        } : null
+    };
+}
+async function saveRoundProgressIntoCurrentProfile() {
+    if (gameState.isGuestProfile || !gameState.activeProfileId || gameState.activeProfileId === PROFILE_GUEST_ID) {
+        showFeedbackMessage('Entre em um perfil para salvar o progresso desta rodada.', 'warning', 2800);
+        return { ok: false, reason: 'guest' };
+    }
+    const payload = buildManualResultProgressPayload();
+    try {
+        profileStorageSetJson(PET_LAST_SUMMARY_KEY, payload);
+    } catch (_) {}
+    try {
+        const progress = loadPetProgress();
+        savePetProgress(progress);
+    } catch (_) {}
+    try { buildCloudProgressSnapshotForSync(gameState.activeProfileId); } catch (_) {}
+    try {
+        if (isCloudFeatureConfigured && isCloudFeatureConfigured()) {
+            await queueCloudSyncForCurrentProfile('progress', buildCloudProgressSnapshotForSync(gameState.activeProfileId));
+        }
+    } catch (_) {}
+    try { gameState.__manualProgressSavedAt = Date.now(); } catch (_) {}
+    const name = String(getStudentProfile()?.name || 'perfil atual').trim();
+    showFeedbackMessage(`Progresso salvo no perfil ${name}.`, 'success', 2600);
+    return { ok: true, payload };
+}
+function updateResultSaveProgressButton() {
+    const btn = document.getElementById('btn-result-save-progress');
+    if (!btn) return null;
+    const isGuest = !!gameState.isGuestProfile || !gameState.activeProfileId || gameState.activeProfileId === PROFILE_GUEST_ID;
+    btn.disabled = false;
+    if (isGuest) {
+        btn.textContent = 'Salvar progresso no perfil';
+        btn.title = 'Entre em um perfil para salvar esta rodada.';
+    } else {
+        const label = String(getStudentProfile()?.name || 'perfil atual').trim() || 'perfil atual';
+        btn.textContent = `Salvar progresso em ${label}`;
+        btn.title = 'Salva esta rodada no perfil atual e envia a atualização para a nuvem, se estiver conectada.';
+    }
+    return btn;
+}
+function updateResultProgressActions() {
+    const card = document.getElementById('result-progression-card');
+    const titleEl = document.getElementById('result-progression-title');
+    const badgeEl = document.getElementById('result-progression-badge');
+    const ruleEl = document.getElementById('result-progression-rule');
+    const statusEl = document.getElementById('result-progression-status');
+    const nextEl = document.getElementById('result-progression-next');
+    const continueBtn = document.getElementById('btn-result-continue-level');
+    const nextLevelBtn = document.getElementById('btn-result-next-level');
+    const saveBtn = document.getElementById('btn-result-save-progress');
+    if (!card || !continueBtn || !nextLevelBtn) return null;
+    const meta = getResultLevelContinuationMeta();
+    if (titleEl) titleEl.textContent = `Progressão em ${formatOperationLabel(meta.operation)} • ${petLevelLabel(meta.currentLevel)}`;
+    if (badgeEl) badgeEl.textContent = meta.badge || '📘 Em progresso';
+    if (ruleEl) ruleEl.textContent = meta.ruleText || '';
+    if (statusEl) statusEl.textContent = meta.statusText || '';
+    if (nextEl) nextEl.textContent = meta.nextText || '';
+    try { updateResultSaveProgressButton(); } catch (_) {}
+    card.classList.remove('hidden');
+    card.hidden = false;
+    card.setAttribute('aria-hidden', 'false');
+    continueBtn.textContent = meta.continueLabel || 'Continuar neste nível';
+    continueBtn.style.display = 'inline-flex';
+    continueBtn.dataset.targetLevel = meta.currentLevel || '';
+    if (meta.nextLevelUnlocked && meta.nextLevel) {
+        nextLevelBtn.textContent = `Ir para ${petLevelLabel(meta.nextLevel)}`;
+        nextLevelBtn.style.display = 'inline-flex';
+        nextLevelBtn.dataset.targetLevel = meta.nextLevel;
+    } else {
+        nextLevelBtn.style.display = 'none';
+        nextLevelBtn.dataset.targetLevel = '';
+    }
+    return meta;
+}
+function startRequestedResultLevel(requestedLevel) {
+    const operation = String(gameState.currentOperation || '');
+    const targetLevel = String(requestedLevel || '');
+    if (!operation || !targetLevel) return;
+    const resolved = resolveRequestedPedagogicalLevel(operation, targetLevel);
+    if (resolved.blocked) {
+        showFeedbackMessage(resolved.state?.recommendation || resolved.state?.detail || 'Este nível ainda está bloqueado pedagogicamente.', 'warning', 3600);
+        return;
+    }
+    const level = resolved.level || targetLevel;
+    if (resolved.redirected && resolved.state) {
+        showFeedbackMessage(resolved.state.recommendation || `Retorno automático recomendado para ${petLevelLabel(level)}.`, 'warning', 4200);
+    }
+    if (level === 'apprentice') {
+        gameState.isRapidMode = false;
+        try { updatePetHomePrefs({ mode: 'study' }); } catch (_) {}
+        modeEstudoBtn.classList.add('active');
+        modeRapidoBtn.classList.remove('active');
+    }
+    hideFeedbackNow();
+    startGame(operation, level);
 }
 function updateResultPerformanceExplanation() {
     const el = document.getElementById('result-performance-explanation');
@@ -1521,9 +1786,57 @@ function getPriority3RoundSummary() {
     }
 }
 // --- Prioridade 2: Onboarding (primeiro acesso) ---
-function petLevelLabel(level) {
-    const map = { apprentice: 'Aprendiz', easy: 'Fácil', medium: 'Médio', advanced: 'Avançado' };
+function getLevelLabelMap(options = {}) {
+    const isRapid = options && Object.prototype.hasOwnProperty.call(options, 'isRapidMode')
+        ? !!options.isRapidMode
+        : !!gameState.isRapidMode;
+    return isRapid
+        ? { apprentice: 'Aprendiz', easy: 'Guerreiro 🟢 – Fácil', medium: 'Capitão 🟡 – Médio', advanced: 'Mestre 🔴 – Avançado' }
+        : { apprentice: 'Aprendiz', easy: 'Fácil', medium: 'Médio', advanced: 'Avançado' };
+}
+function petLevelLabel(level, options = {}) {
+    const map = getLevelLabelMap(options);
     return map[level] || String(level || '').toUpperCase();
+}
+function updateModeAwareLevelCardCopy() {
+    try {
+        const isRapid = !!gameState.isRapidMode;
+        const titleMap = getLevelLabelMap({ isRapidMode: isRapid });
+        const apprenticeBtn = document.getElementById('level-apprentice-btn');
+        const easyBtn = document.querySelector('.level-btn[data-level="easy"]');
+        const mediumBtn = document.querySelector('.level-btn[data-level="medium"]');
+        const advancedBtn = document.querySelector('.level-btn[data-level="advanced"]');
+        if (apprenticeBtn) {
+            const h3 = apprenticeBtn.querySelector('h3');
+            const p = apprenticeBtn.querySelector('p');
+            if (h3) h3.textContent = 'Aprendiz (🌱)';
+            if (p) p.textContent = 'Somente para Multiplicação. Trilha com 10 etapas de compreensão inicial (50 questões no total), Modo Estudo como padrão e mais tempo no Modo Rápido.';
+        }
+        if (easyBtn) {
+            const h3 = easyBtn.querySelector('h3');
+            const p = easyBtn.querySelector('p');
+            if (h3) h3.textContent = titleMap.easy;
+            if (p) p.textContent = isRapid
+                ? 'Ideal para iniciar e ganhar ritmo. Números e tabuadas menores (Tempo Base: 15s).'
+                : 'Nível inicial para construir compreensão com mais calma e apoio pedagógico.';
+        }
+        if (mediumBtn) {
+            const h3 = mediumBtn.querySelector('h3');
+            const p = mediumBtn.querySelector('p');
+            if (h3) h3.textContent = titleMap.medium;
+            if (p) p.textContent = isRapid
+                ? 'Desafio intermediário. Tabuadas médias, potências e raízes simples (Tempo Base: 30s).'
+                : 'Nível intermediário para ampliar repertório, estratégias e segurança nos cálculos.';
+        }
+        if (advancedBtn) {
+            const h3 = advancedBtn.querySelector('h3');
+            const p = advancedBtn.querySelector('p');
+            if (h3) h3.textContent = titleMap.advanced;
+            if (p) p.textContent = isRapid
+                ? 'Desafio avançado. Potências e raízes complexas, tabuadas e números altos (Tempo Base: 45s).'
+                : 'Nível avançado para consolidar autonomia, precisão e desafios mais complexos.';
+        }
+    } catch (_) {}
 }
 function isPetOnboarded() {
     try { return localStorage.getItem(PET_ONBOARD_KEY) === '1'; } catch (_) { return true; }
@@ -1711,17 +2024,316 @@ function formatDateBR(key) {
         return `${m[3]}/${m[2]}/${m[1]}`;
     } catch (_) { return ''; }
 }
+
+function loadPetHomePrefs() {
+    const def = { mode: 'study', operation: '', level: '' };
+    try {
+        const raw = profileStorageGetRaw(PET_HOME_PREFS_KEY);
+        const obj = safeJsonParse(raw, def);
+        return {
+            mode: String(obj?.mode || 'study') === 'rapid' ? 'rapid' : 'study',
+            operation: String(obj?.operation || ''),
+            level: String(obj?.level || '')
+        };
+    } catch (_) {
+        return def;
+    }
+}
+function savePetHomePrefs(prefs) {
+    try {
+        profileStorageSetJson(PET_HOME_PREFS_KEY, {
+            mode: String(prefs?.mode || 'study') === 'rapid' ? 'rapid' : 'study',
+            operation: String(prefs?.operation || ''),
+            level: String(prefs?.level || ''),
+            updatedAt: Date.now()
+        });
+    } catch (_) {}
+}
+function updatePetHomePrefs(partial = {}) {
+    try {
+        const prev = loadPetHomePrefs();
+        const next = { ...prev, ...(partial && typeof partial === 'object' ? partial : {}) };
+        savePetHomePrefs(next);
+        return next;
+    } catch (_) {
+        return loadPetHomePrefs();
+    }
+}
+function getPetRapidHintCredits() {
+    try { return Math.max(0, Number(loadPetProgress().rapidHintCredits || 0)); } catch (_) { return 0; }
+}
+function grantPetRapidHintCredits(amount = 1) {
+    try {
+        const add = Math.max(0, Math.round(Number(amount) || 0));
+        if (!add) return 0;
+        const p = loadPetProgress();
+        p.rapidHintCredits = Math.max(0, Number(p.rapidHintCredits || 0)) + add;
+        savePetProgress(p);
+        try { refreshPetProgressMini(); } catch (_) {}
+        return add;
+    } catch (_) {
+        return 0;
+    }
+}
+function consumePetRapidHintCredit() {
+    try {
+        const p = loadPetProgress();
+        const current = Math.max(0, Number(p.rapidHintCredits || 0));
+        if (!current) return false;
+        p.rapidHintCredits = current - 1;
+        savePetProgress(p);
+        try { refreshPetProgressMini(); } catch (_) {}
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+function getPetMissionCandidateFromReviews() {
+    try {
+        const map = loadOperationSkillReviewMap();
+        const entries = Object.values(map || {}).filter((it) => it && typeof it === 'object' && String(it.operation || '').trim() && String(it.level || '').trim());
+        if (!entries.length) return null;
+        const ranked = entries.map((rec) => {
+            const domain = getStageSkillDomainProfile(rec);
+            let weight = computeSkillWeaknessScore(rec);
+            if (domain.due) weight += 4;
+            if (domain.stateCode === 'fragile') weight += 2.5;
+            else if (domain.stateCode === 'building') weight += 1.2;
+            return { rec, domain, weight };
+        }).sort((a, b) => Number(b.weight || 0) - Number(a.weight || 0));
+        const picked = ranked[0];
+        if (!picked || !picked.rec) return null;
+        return {
+            operation: String(picked.rec.operation || ''),
+            level: String(picked.rec.level || ''),
+            stageIndex: Math.max(0, Number(picked.rec.stageIndex) || 0),
+            stageLabel: String(picked.rec.stageLabel || '').trim(),
+            due: !!picked.domain?.due,
+            stateCode: String(picked.domain?.stateCode || ''),
+            reason: picked.domain?.due ? 'revisão curta' : 'ponto de atenção'
+        };
+    } catch (_) {
+        return null;
+    }
+}
+function getPetMissionCandidateFromHistory() {
+    try {
+        const history = loadPetSessionHistory();
+        const last = Array.isArray(history) ? history.find((it) => it && String(it.operation || '').trim() && String(it.level || '').trim()) : null;
+        if (!last) return null;
+        return {
+            operation: String(last.operation || ''),
+            level: String(last.level || ''),
+            stageIndex: Number.isFinite(Number(last.stageNo)) ? Math.max(0, Number(last.stageNo) - 1) : 0,
+            stageLabel: String(last.stageLabel || '').trim(),
+            due: false,
+            stateCode: '',
+            reason: 'continuidade'
+        };
+    } catch (_) {
+        return null;
+    }
+}
+function buildPetDailyMissionForToday() {
+    const today = petDateKeyLocal();
+    const candidate = getPetMissionCandidateFromReviews() || getPetMissionCandidateFromHistory() || {
+        operation: 'addition',
+        level: 'easy',
+        stageIndex: 0,
+        stageLabel: '',
+        due: false,
+        stateCode: 'new',
+        reason: 'base'
+    };
+    const op = String(candidate.operation || 'addition');
+    const level = String(candidate.level || 'easy');
+    const stageLabel = String(candidate.stageLabel || '').trim();
+    const targetAnswered = candidate.due ? 4 : 5;
+    const targetCorrect = candidate.due ? 3 : 4;
+    return {
+        dateKey: today,
+        operation: op,
+        level,
+        stageIndex: Math.max(0, Number(candidate.stageIndex) || 0),
+        stageLabel,
+        targetAnswered,
+        targetCorrect,
+        answered: 0,
+        correct: 0,
+        completedAt: 0,
+        rewardXp: PET_DAILY_MISSION_REWARD_XP,
+        rewardHintCredits: PET_DAILY_MISSION_REWARD_HINTS,
+        reason: String(candidate.reason || ''),
+        prompt: `${formatOperationLabel(op)} • ${petLevelLabel(level)}${stageLabel ? ` • ${stageLabel}` : ''}`
+    };
+}
+function loadPetDailyMission() {
+    try {
+        const raw = profileStorageGetRaw(PET_DAILY_MISSION_KEY);
+        const mission = safeJsonParse(raw, null);
+        if (!mission || typeof mission !== 'object') return null;
+        return mission;
+    } catch (_) {
+        return null;
+    }
+}
+function savePetDailyMission(mission) {
+    try { profileStorageSetJson(PET_DAILY_MISSION_KEY, mission || null); } catch (_) {}
+}
+function ensurePetDailyMission() {
+    try {
+        const today = petDateKeyLocal();
+        const current = loadPetDailyMission();
+        if (current && String(current.dateKey || '') === today) return current;
+        const fresh = buildPetDailyMissionForToday();
+        savePetDailyMission(fresh);
+        return fresh;
+    } catch (_) {
+        return null;
+    }
+}
+function getPetDailyMissionStatusText(mission = null) {
+    try {
+        const m = mission || ensurePetDailyMission();
+        if (!m) return 'Treine uma rodada curta para manter sua sequência.';
+        const answered = Math.max(0, Number(m.answered || 0));
+        const correct = Math.max(0, Number(m.correct || 0));
+        const targetAnswered = Math.max(1, Number(m.targetAnswered || 5));
+        const targetCorrect = Math.max(1, Number(m.targetCorrect || 4));
+        if (Number(m.completedAt || 0) > 0) {
+            return `Missão concluída em ${m.prompt}.`;
+        }
+        return `${correct}/${targetCorrect} acertos e ${answered}/${targetAnswered} questões em ${m.prompt}.`;
+    } catch (_) {
+        return 'Treine uma rodada curta para manter sua sequência.';
+    }
+}
+function getPetDailyMissionHomeText(mission = null) {
+    try {
+        const m = mission || ensurePetDailyMission();
+        if (!m) return 'Faça uma rodada rápida e mantenha sua sequência.';
+        if (Number(m.completedAt || 0) > 0) return 'Missão concluída. Volte amanhã para manter sua sequência.';
+        if (m.due) return 'Hora da revisão rápida. Toque em Continuar e entre direto no treino sugerido.';
+        return 'Faça uma rodada curta, ganhe bônus e mantenha sua sequência.';
+    } catch (_) {
+        return 'Faça uma rodada rápida e mantenha sua sequência.';
+    }
+}
+function getPetDailyMissionNearGoalText(mission = null) {
+    try {
+        const m = mission || ensurePetDailyMission();
+        if (!m || Number(m.completedAt || 0) > 0) return '';
+        const answered = Math.max(0, Number(m.answered || 0));
+        const correct = Math.max(0, Number(m.correct || 0));
+        const targetAnswered = Math.max(1, Number(m.targetAnswered || 5));
+        const targetCorrect = Math.max(1, Number(m.targetCorrect || 4));
+        const remainAnswered = Math.max(0, targetAnswered - answered);
+        const remainCorrect = Math.max(0, targetCorrect - correct);
+        if (remainAnswered === 1 && remainCorrect <= 1) return 'Falta muito pouco para fechar a missão do dia.';
+        if (remainCorrect === 1 && answered >= targetAnswered - 1) return 'Mais um acerto e a missão do dia fica pronta.';
+        if (remainAnswered === 1) return 'Só falta mais uma questão para fechar a missão do dia.';
+        return '';
+    } catch (_) {
+        return '';
+    }
+}
+function updatePetDailyMissionProgressFromQuestion(question, wasCorrectFinal) {
+    try {
+        const mission = ensurePetDailyMission();
+        if (!mission || Number(mission.completedAt || 0) > 0) return mission;
+        const q = question || {};
+        const op = String(q.operacao || gameState.currentOperation || '');
+        const level = String(gameState.currentLevel || '');
+        const stageIndex = Number.isFinite(Number(q.masteryStageIndex)) ? Math.max(0, Number(q.masteryStageIndex)) : Math.max(0, Number(q.stageIndex) || 0);
+        const stageLabel = String(q.masteryStageLabel || q.stageLabel || '').trim();
+        const stageMatches = !String(mission.stageLabel || '').trim()
+            || String(mission.stageLabel || '').trim() === stageLabel
+            || Math.max(0, Number(mission.stageIndex) || 0) === stageIndex;
+        if (op !== String(mission.operation || '') || level !== String(mission.level || '') || !stageMatches) return mission;
+        mission.answered = Math.max(0, Number(mission.answered || 0)) + 1;
+        if (wasCorrectFinal) mission.correct = Math.max(0, Number(mission.correct || 0)) + 1;
+        const targetAnswered = Math.max(1, Number(mission.targetAnswered || 5));
+        const targetCorrect = Math.max(1, Number(mission.targetCorrect || 4));
+        if (!Number(mission.completedAt || 0) && mission.answered >= targetAnswered && mission.correct >= targetCorrect) {
+            mission.completedAt = Date.now();
+            const rewardXp = Math.max(0, Math.round(Number(mission.rewardXp || PET_DAILY_MISSION_REWARD_XP)));
+            const rewardHints = Math.max(0, Math.round(Number(mission.rewardHintCredits || PET_DAILY_MISSION_REWARD_HINTS)));
+            if (rewardXp > 0) {
+                try { grantPetBonusXP(rewardXp); } catch (_) {}
+            }
+            if (rewardHints > 0) {
+                try { grantPetRapidHintCredits(rewardHints); } catch (_) {}
+            }
+            const missionReward = recordPetMissionCompletionReward();
+            const extraHints = Math.max(0, Number(missionReward?.bonusHints || 0));
+            const missionStreak = Math.max(0, Number(missionReward?.missionStreak || 0));
+            const unlockedTitles = Array.isArray(missionReward?.newlyUnlocked) && missionReward.newlyUnlocked.length
+                ? missionReward.newlyUnlocked.map((id) => (getPetBadgeCatalog().find((b) => b.id === id)?.title) || id).join(', ')
+                : '';
+            try {
+                const parts = [`🎯 Missão concluída! +${rewardXp} XP`];
+                if (rewardHints) parts.push(`+${rewardHints} dica${rewardHints === 1 ? '' : 's'} rápida${rewardHints === 1 ? '' : 's'}`);
+                if (missionStreak) parts.push(`Sequência de missões: ${missionStreak} dia${missionStreak === 1 ? '' : 's'}`);
+                if (extraHints) parts.push(`bônus: +${extraHints} dica extra`);
+                if (unlockedTitles) parts.push(`conquista: ${unlockedTitles}`);
+                const msg = parts.join(' • ');
+                if (window.PET_LEVEL1_UI && PET_LEVEL1_UI.showToast) PET_LEVEL1_UI.showToast(msg, { type: 'success', timeout: 3600 });
+                else showFeedbackMessage(msg, 'success', 3600);
+            } catch (_) {}
+        } else {
+            const nearGoalText = getPetDailyMissionNearGoalText(mission);
+            if (nearGoalText) {
+                try {
+                    if (window.PET_LEVEL1_UI && PET_LEVEL1_UI.showToast) PET_LEVEL1_UI.showToast(`🎯 ${nearGoalText}`, { type: 'info', timeout: 2200 });
+                    else showFeedbackMessage(`🎯 ${nearGoalText}`, 'info', 2200);
+                } catch (_) {}
+            }
+        }
+        savePetDailyMission(mission);
+        try { refreshPetProgressMini(); } catch (_) {}
+        return mission;
+    } catch (_) {
+        return null;
+    }
+}
+function applySavedPetHomePreferences() {
+    try {
+        const prefs = loadPetHomePrefs();
+        const rapidBtn = document.getElementById('mode-rapido');
+        const studyBtn = document.getElementById('mode-estudo');
+        const isRapid = String(prefs.mode || 'study') === 'rapid';
+        gameState.isRapidMode = isRapid;
+        if (rapidBtn) rapidBtn.classList.toggle('active', isRapid);
+        if (studyBtn) studyBtn.classList.toggle('active', !isRapid);
+        try { updateModeAwareLevelCardCopy(); } catch (_) {}
+        if (String(gameState.currentScreen || '') === 'level-selection-screen' && prefs.operation) {
+            try { updateLevelButtonsForOperation(prefs.operation); } catch (_) {}
+        }
+    } catch (_) {}
+}
 function getPetBadgeCatalog() {
     return [
         { id: 'first_session', title: 'Primeira sessão', desc: 'Concluiu sua primeira sessão.' },
         { id: 'streak_3', title: '3 dias seguidos', desc: 'Estudou 3 dias consecutivos.' },
         { id: 'streak_7', title: '7 dias seguidos', desc: 'Manteve uma sequência de 7 dias.' },
         { id: 'streak_14', title: '14 dias seguidos', desc: 'Manteve uma sequência de 14 dias.' },
+        { id: 'mission_3', title: 'Missão 3 dias', desc: 'Concluiu a missão diária por 3 dias seguidos.' },
+        { id: 'mission_7', title: 'Missão 7 dias', desc: 'Concluiu a missão diária por 7 dias seguidos.' },
         { id: 'accuracy_90', title: 'Precisão 90%', desc: 'Concluiu uma sessão com 90%+ de precisão (10+ questões).' },
         { id: 'rapid_90', title: 'Rápido 90%', desc: 'Concluiu no Modo Rápido com 90%+ de precisão (10+ questões).' },
+        { id: 'personal_best', title: 'Novo recorde pessoal', desc: 'Superou sua melhor precisão em um nível.' },
         { id: 'answered_100', title: '100 questões', desc: 'Respondeu 100 questões no total (somando sessões).' },
         { id: 'answered_500', title: '500 questões', desc: 'Respondeu 500 questões no total (somando sessões).' }
     ];
+}
+function normalizeRapidMultiplicationTrailProgress(obj = {}) {
+    const src = (obj && typeof obj === 'object') ? obj : {};
+    return {
+        easyPassedAt: Math.max(0, Number(src.easyPassedAt || 0)),
+        mediumPassedAt: Math.max(0, Number(src.mediumPassedAt || 0)),
+        advancedPassedAt: Math.max(0, Number(src.advancedPassedAt || 0)),
+        completedAt: Math.max(0, Number(src.completedAt || 0))
+    };
 }
 function loadPetProgress() {
     const def = {
@@ -1731,13 +2343,20 @@ function loadPetProgress() {
         bestStreak: 0,
         totalSessions: 0,
         totalAnswered: 0,
-        badges: {}
+        missionsCompleted: 0,
+        missionStreak: 0,
+        lastMissionDate: null,
+        badges: {},
+        rapidHintCredits: 0,
+        rapidMultiplicationTrail: normalizeRapidMultiplicationTrailProgress(),
+        personalBests: {}
     };
     try {
         const raw = profileStorageGetRaw(PET_PROGRESS_KEY);
         const obj = safeJsonParse(raw, def);
         if (!obj || typeof obj !== 'object') return def;
         const badges = (obj.badges && typeof obj.badges === 'object') ? obj.badges : {};
+        const personalBests = (obj.personalBests && typeof obj.personalBests === 'object') ? obj.personalBests : {};
         return {
             ...def,
             ...obj,
@@ -1745,11 +2364,171 @@ function loadPetProgress() {
             bestStreak: Number(obj.bestStreak || 0),
             totalSessions: Number(obj.totalSessions || 0),
             totalAnswered: Number(obj.totalAnswered || 0),
-            badges
+            missionsCompleted: Number(obj.missionsCompleted || 0),
+            missionStreak: Number(obj.missionStreak || 0),
+            lastMissionDate: obj.lastMissionDate || null,
+            rapidHintCredits: Math.max(0, Number(obj.rapidHintCredits || 0)),
+            rapidMultiplicationTrail: normalizeRapidMultiplicationTrailProgress(obj.rapidMultiplicationTrail),
+            badges,
+            personalBests
         };
     } catch (_) {
         return def;
     }
+}
+function getPetPersonalBestKey({ mode = 'study', operation = '', level = '' } = {}) {
+    return `${String(mode || 'study')}:${String(operation || '')}:${String(level || '')}`;
+}
+function updatePetPersonalBest(progress, { mode = 'study', operation = '', level = '', accuracy = 0, answered = 0 } = {}) {
+    const p = (progress && typeof progress === 'object') ? progress : loadPetProgress();
+    const op = String(operation || '');
+    const lvl = String(level || '');
+    const qty = Math.max(0, Number(answered || 0));
+    const acc = Math.max(0, Math.min(100, Math.round(Number(accuracy || 0) * 10) / 10));
+    if (!op || !lvl || qty <= 0) return { updated: false };
+    const key = getPetPersonalBestKey({ mode, operation: op, level: lvl });
+    const current = (p.personalBests && typeof p.personalBests === 'object' && p.personalBests[key]) ? p.personalBests[key] : null;
+    const currentAccuracy = current ? Math.max(0, Number(current.accuracy || 0)) : -1;
+    const currentAnswered = current ? Math.max(0, Number(current.answered || 0)) : 0;
+    const improved = acc > currentAccuracy || (acc === currentAccuracy && qty > currentAnswered);
+    if (!improved) return { updated: false, current };
+    p.personalBests = (p.personalBests && typeof p.personalBests === 'object') ? p.personalBests : {};
+    p.personalBests[key] = {
+        accuracy: acc,
+        answered: qty,
+        updatedAt: Date.now(),
+        mode: String(mode || 'study'),
+        operation: op,
+        level: lvl
+    };
+    return {
+        updated: true,
+        key,
+        best: p.personalBests[key],
+        label: `${formatOperationLabel(op)} • ${petLevelLabel(lvl, { isRapidMode: String(mode || 'study') === 'rapid' && op === 'multiplication' })}`
+    };
+}
+function recordPetMissionCompletionReward() {
+    try {
+        const p = loadPetProgress();
+        const today = petDateKeyLocal();
+        if (String(p.lastMissionDate || '') === today) return { updated: false, progress: p, newlyUnlocked: [] };
+        const yesterday = petAddDaysToKey(today, -1);
+        if (String(p.lastMissionDate || '') === yesterday) p.missionStreak = Math.max(1, Number(p.missionStreak || 0) + 1);
+        else p.missionStreak = 1;
+        p.lastMissionDate = today;
+        p.missionsCompleted = Math.max(0, Number(p.missionsCompleted || 0)) + 1;
+        const newlyUnlocked = [];
+        if (p.missionStreak >= 3 && awardPetBadge(p, 'mission_3')) newlyUnlocked.push('mission_3');
+        if (p.missionStreak >= 7 && awardPetBadge(p, 'mission_7')) newlyUnlocked.push('mission_7');
+        let bonusHints = 0;
+        if (p.missionStreak === 3 || p.missionStreak === 7) {
+            bonusHints = 2;
+            p.rapidHintCredits = Math.max(0, Number(p.rapidHintCredits || 0)) + bonusHints;
+        }
+        savePetProgress(p);
+        try { refreshPetProgressMini(); } catch (_) {}
+        return { updated: true, progress: p, missionStreak: p.missionStreak, bonusHints, newlyUnlocked };
+    } catch (_) {
+        return { updated: false, progress: loadPetProgress(), newlyUnlocked: [] };
+    }
+}
+function startPetDailyMissionNow() {
+    try {
+        const mission = ensurePetDailyMission();
+        if (!mission) return false;
+        const operation = String(mission.operation || 'addition');
+        const level = String(mission.level || 'easy');
+        const prefs = loadPetHomePrefs();
+        const mode = String(prefs.mode || 'study');
+        gameState.isRapidMode = mode === 'rapid';
+        try { updatePetHomePrefs({ operation, level, mode }); } catch (_) {}
+        try {
+            const rapidBtn = document.getElementById('mode-rapido');
+            const studyBtn = document.getElementById('mode-estudo');
+            if (rapidBtn) rapidBtn.classList.toggle('active', gameState.isRapidMode);
+            if (studyBtn) studyBtn.classList.toggle('active', !gameState.isRapidMode);
+        } catch (_) {}
+        try { PET_LEVEL1_UI.showToast(`🎯 ${getPetDailyMissionStatusText(mission)}`, { type: 'info', timeout: 2600 }); } catch (_) {}
+        startGame(operation, level, { skipDiagnostic: true });
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+function getRapidMultiplicationTrailProgress() {
+    try { return normalizeRapidMultiplicationTrailProgress(loadPetProgress().rapidMultiplicationTrail); } catch (_) { return normalizeRapidMultiplicationTrailProgress(); }
+}
+function saveRapidMultiplicationTrailProgress(progress) {
+    try {
+        const p = loadPetProgress();
+        p.rapidMultiplicationTrail = normalizeRapidMultiplicationTrailProgress(progress);
+        savePetProgress(p);
+    } catch (_) {}
+}
+function recordRapidMultiplicationTrailResult(level, stats = {}) {
+    if (String(gameState.currentOperation || '') !== 'multiplication' || !gameState.isRapidMode) return { updated: false, passed: false, completedTrail: false };
+    const lvl = String(level || '');
+    if (!['easy', 'medium', 'advanced'].includes(lvl)) return { updated: false, passed: false, completedTrail: false };
+    const answered = Math.max(0, Number(stats.answered || 0));
+    const totalQuestions = Math.max(0, Number(stats.totalQuestions || 0));
+    const accuracy = Math.max(0, Math.min(100, Number(stats.accuracy || 0)));
+    const completedLevel = totalQuestions > 0 && answered >= totalQuestions;
+    const passed = completedLevel && accuracy >= 80;
+    if (!passed) return { updated: false, passed: false, completedTrail: false };
+    const current = getRapidMultiplicationTrailProgress();
+    const now = Date.now();
+    let updated = false;
+    if (lvl === 'easy' && !current.easyPassedAt) {
+        current.easyPassedAt = now;
+        updated = true;
+    }
+    if (lvl === 'medium' && !current.mediumPassedAt) {
+        current.mediumPassedAt = now;
+        updated = true;
+    }
+    if (lvl === 'advanced' && !current.advancedPassedAt) {
+        current.advancedPassedAt = now;
+        updated = true;
+    }
+    if (lvl === 'advanced' && !current.completedAt) {
+        current.completedAt = now;
+        updated = true;
+    }
+    if (updated) saveRapidMultiplicationTrailProgress(current);
+    return {
+        updated,
+        passed: true,
+        completedTrail: !!current.completedAt,
+        nextLevel: lvl === 'easy' ? 'medium' : (lvl === 'medium' ? 'advanced' : ''),
+        progress: current
+    };
+}
+function getRapidMultiplicationLevelState(level) {
+    const progress = getRapidMultiplicationTrailProgress();
+    const lvl = String(level || '');
+    if (lvl === 'easy') {
+        return progress.easyPassedAt
+            ? { code: 'mastered', badge: '🟢 Dominado', detail: 'Guerreiro concluído no Modo Rápido com pelo menos 80% do total de questões.', recommendation: 'Você já pode seguir para Capitão no Modo Rápido.', technicalReason: 'critério de 80% do nível cumprido.', returnLevel: '', missing: '' }
+            : { code: 'released', badge: '✅ Liberado', detail: 'Ponto de entrada do Modo Rápido.', recommendation: 'No Modo Rápido, comece por Guerreiro. Para liberar Capitão, feche o nível com no mínimo 80% do total de questões.', technicalReason: 'entrada rápida liberada por padrão.', returnLevel: '', missing: 'Critério: 80% do total de questões do nível.' };
+    }
+    if (lvl === 'medium') {
+        if (!progress.easyPassedAt) {
+            return { code: 'locked', badge: '🔒 Bloqueado', detail: 'Capitão exige domínio de Guerreiro no Modo Rápido.', recommendation: 'Conclua Guerreiro com no mínimo 80% do total de questões para liberar Capitão.', technicalReason: 'pré-requisito do Modo Rápido não cumprido.', returnLevel: 'easy', missing: 'Falta fechar Guerreiro com 80%.' };
+        }
+        return progress.mediumPassedAt
+            ? { code: 'mastered', badge: '🟢 Dominado', detail: 'Capitão concluído no Modo Rápido com pelo menos 80% do total de questões.', recommendation: 'Você já pode seguir para Mestre no Modo Rápido.', technicalReason: 'critério de 80% do nível cumprido.', returnLevel: '', missing: '' }
+            : { code: 'released', badge: '✅ Liberado', detail: 'Capitão liberado para o Modo Rápido.', recommendation: 'Feche Capitão com no mínimo 80% do total de questões para liberar Mestre.', technicalReason: 'pré-requisito de Guerreiro cumprido.', returnLevel: '', missing: 'Critério: 80% do total de questões do nível.' };
+    }
+    if (lvl === 'advanced') {
+        if (!progress.mediumPassedAt) {
+            return { code: 'locked', badge: '🔒 Bloqueado', detail: 'Mestre exige domínio de Capitão no Modo Rápido.', recommendation: 'Conclua Capitão com no mínimo 80% do total de questões para liberar Mestre.', technicalReason: 'pré-requisito do Modo Rápido não cumprido.', returnLevel: 'medium', missing: 'Falta fechar Capitão com 80%.' };
+        }
+        return progress.advancedPassedAt
+            ? { code: 'mastered', badge: '🏆 Trilha superada', detail: 'Mestre concluído no Modo Rápido com pelo menos 80% do total de questões.', recommendation: 'Você superou a trilha da multiplicação no Modo Rápido.', technicalReason: 'critério final de 80% cumprido.', returnLevel: '', missing: '' }
+            : { code: 'released', badge: '✅ Liberado', detail: 'Mestre liberado para o Modo Rápido.', recommendation: 'Feche Mestre com no mínimo 80% do total de questões para superar a trilha da multiplicação.', technicalReason: 'pré-requisito de Capitão cumprido.', returnLevel: '', missing: 'Critério: 80% do total de questões do nível.' };
+    }
+    return null;
 }
 function savePetProgress(p) {
     try {
@@ -2811,22 +3590,40 @@ function updatePetProgressOnSessionEnd({ answered = 0, accuracy = 0, mode = 'stu
     if (p.streak >= 3 && awardPetBadge(p, 'streak_3')) newlyUnlocked.push('streak_3');
     if (p.streak >= 7 && awardPetBadge(p, 'streak_7')) newlyUnlocked.push('streak_7');
     if (p.streak >= 14 && awardPetBadge(p, 'streak_14')) newlyUnlocked.push('streak_14');
+    if (Number(p.missionStreak || 0) >= 3 && awardPetBadge(p, 'mission_3')) newlyUnlocked.push('mission_3');
+    if (Number(p.missionStreak || 0) >= 7 && awardPetBadge(p, 'mission_7')) newlyUnlocked.push('mission_7');
     if (Number(accuracy) >= 90 && Number(answered) >= 10 && awardPetBadge(p, 'accuracy_90')) newlyUnlocked.push('accuracy_90');
     if (String(mode) === 'rapid' && Number(accuracy) >= 90 && Number(answered) >= 10 && awardPetBadge(p, 'rapid_90')) newlyUnlocked.push('rapid_90');
+    const personalBest = updatePetPersonalBest(p, {
+        mode,
+        operation: gameState.currentOperation,
+        level: gameState.currentLevel,
+        accuracy,
+        answered
+    });
+    let personalBestRewardHints = 0;
+    if (personalBest && personalBest.updated) {
+        if (awardPetBadge(p, 'personal_best')) newlyUnlocked.push('personal_best');
+        personalBestRewardHints = 2;
+        p.rapidHintCredits = Math.max(0, Number(p.rapidHintCredits || 0)) + personalBestRewardHints;
+    }
     if (p.totalAnswered >= 100 && awardPetBadge(p, 'answered_100')) newlyUnlocked.push('answered_100');
     if (p.totalAnswered >= 500 && awardPetBadge(p, 'answered_500')) newlyUnlocked.push('answered_500');
     // Recompensa de sequência (XP bônus em marcos: 3/7/14 dias)
     let streakReward = { xp: 0, label: '' };
+    let streakRewardHints = 0;
     try {
         if (streakChanged) {
-            // Bônus configurável (mude os valores em PET_STREAK_REWARD_RULES)
             streakReward = getPetStreakRewardForStreak(p.streak);
+            if (Number(streakReward.xp || 0) > 0) {
+                streakRewardHints = 1;
+                p.rapidHintCredits = Math.max(0, Number(p.rapidHintCredits || 0)) + streakRewardHints;
+            }
         }
     } catch (_) {}
     savePetProgress(p);
-    // Atualiza UI (Home) se existir
     try { refreshPetProgressMini(); } catch (_) {}
-    return { progress: p, newlyUnlocked, streakChanged, streakReward };
+    return { progress: p, newlyUnlocked, streakChanged, streakReward, streakRewardHints, personalBest, personalBestRewardHints };
 }
 // --- Prioridade 3+: Recompensa de sequência (XP) + Medalhas na tela de Resultado ---
 function refreshResultScreenXPSummary() {
@@ -2904,7 +3701,13 @@ function renderPetSessionRewardsOnResultScreen() {
         const rewardXP = Number(upd.streakReward?.xp || 0);
         const streakNow = Number(upd.progress?.streak || 0);
         const unlocked = Array.isArray(upd.newlyUnlocked) ? upd.newlyUnlocked.slice() : [];
-        if (!rewardXP && unlocked.length === 0) {
+        const personalBest = (upd.personalBest && upd.personalBest.updated) ? upd.personalBest : null;
+        const missionStreak = Math.max(0, Number(upd.progress?.missionStreak || 0));
+        const rapidTrail = (gameState.__rapidMultiplicationTrailResult && gameState.__rapidMultiplicationTrailResult.passed) ? gameState.__rapidMultiplicationTrailResult : null;
+        const mission = ensurePetDailyMission();
+        const missionComplete = mission && Number(mission.completedAt || 0) > 0;
+        const extraHintChips = Math.max(0, Number(upd.streakRewardHints || 0)) + Math.max(0, Number(upd.personalBestRewardHints || 0));
+        if (!rewardXP && unlocked.length === 0 && !personalBest && !missionStreak && !rapidTrail && !missionComplete) {
             wrap.classList.add('hidden');
             return;
         }
@@ -2920,7 +3723,12 @@ function renderPetSessionRewardsOnResultScreen() {
           <div class="pet-session-rewards-title">Nesta sessão</div>
           <div class="pet-reward-row">
             <span class="pet-pill-chip">🔥 Sequência: ${streakNow} dia${streakNow === 1 ? '' : 's'}</span>
+            ${missionStreak ? `<span class="pet-pill-chip">🎯 Missões: ${missionStreak} dia${missionStreak === 1 ? '' : 's'}</span>` : ``}
             ${rewardXP ? `<span class="pet-pill-chip">🎁 Bônus: +${rewardXP} XP</span>` : ``}
+            ${extraHintChips ? `<span class="pet-pill-chip">💡 +${extraHintChips} dica${extraHintChips === 1 ? '' : 's'} rápida${extraHintChips === 1 ? '' : 's'}</span>` : ``}
+            ${personalBest ? `<span class="pet-pill-chip">🏁 Novo recorde: ${diagEscapeHtml(personalBest.label)} • ${Number(personalBest.best?.accuracy || 0)}%</span>` : ``}
+            ${missionComplete ? `<span class="pet-pill-chip">🎯 Missão concluída</span>` : ``}
+            ${rapidTrail ? `<span class="pet-pill-chip">🚀 ${rapidTrail.completedTrail ? 'Trilha superada' : `Próximo nível: ${petLevelLabel(rapidTrail.nextLevel, { isRapidMode: true })}`}</span>` : ``}
           </div>
           ${unlocked.length ? `
             <div class="pet-session-rewards-subtitle">Conquistas</div>
@@ -3000,8 +3808,27 @@ function refreshPetProgressMini() {
     if (!chip) return;
     const p = loadPetProgress();
     const s = Number(p.streak || 0);
+    const hintCredits = Math.max(0, Number(p.rapidHintCredits || 0));
+    const mission = ensurePetDailyMission();
     chip.textContent = `🔥 Sequência: ${s} dia${s === 1 ? '' : 's'}`;
-    chip.title = `Recorde: ${Number(p.bestStreak || 0)} dia(s) • Sessões: ${Number(p.totalSessions || 0)} • Questões: ${Number(p.totalAnswered || 0)}`;
+    chip.title = `Recorde: ${Number(p.bestStreak || 0)} dia(s) • Missões seguidas: ${Number(p.missionStreak || 0)} • Missões concluídas: ${Number(p.missionsCompleted || 0)} • Sessões: ${Number(p.totalSessions || 0)} • Questões: ${Number(p.totalAnswered || 0)} • Dicas rápidas extras: ${hintCredits} • ${getPetDailyMissionHomeText(mission)}`;
+    try { refreshPetHomeSmartCta(); } catch (_) {}
+}
+function refreshPetHomeSmartCta() {
+    try {
+        const mission = ensurePetDailyMission();
+        const cta = document.querySelector('.call-to-action-paragraph');
+        if (cta) cta.textContent = getPetDailyMissionHomeText(mission);
+        const btn = document.getElementById('btn-continue-session');
+        const snap = loadSavedPetSession();
+        if (btn && snap) {
+            btn.textContent = `▶ Continuar ${formatOperationLabel(snap.operation)} • ${petLevelLabel(snap.level)}`;
+            btn.title = `Retomar ${formatOperationLabel(snap.operation)} no nível ${petLevelLabel(snap.level)}.`;
+        } else if (btn && mission) {
+            btn.textContent = `▶ Jogar agora`;
+            btn.title = `${getPetDailyMissionHomeText(mission)} Toque para começar no ponto sugerido.`;
+        }
+    } catch (_) {}
 }
 // Home global capture desativado para evitar cliques duplicados.
 try { window.openPetAchievementsModalSafe = openPetAchievementsModalSafe; } catch (_) {}
@@ -3100,9 +3927,8 @@ function openPetAchievementsModal() {
         }
     });
 }
-function formatLevelLabel(level) {
-    const map = { apprentice: 'Aprendiz', easy: 'Fácil', medium: 'Médio', advanced: 'Difícil' };
-    return map[level] || String(level || '').toUpperCase();
+function formatLevelLabel(level, options = {}) {
+    return petLevelLabel(level, options);
 }
 function applyGameModeUIForResume() {
     const timeContainer = timeBar && timeBar.parentElement;
@@ -3354,18 +4180,32 @@ function refreshContinueSessionButtonVisibility() {
     const btn = document.getElementById('btn-continue-session');
     if (!btn) return;
     const snap = loadSavedPetSession();
+    const mission = ensurePetDailyMission();
     btn.style.display = 'block';
     btn.disabled = false;
-    btn.textContent = '▶ Continuar';
-    btn.title = snap ? 'Retomar o andamento salvo do perfil atual.' : 'Nenhum andamento salvo no perfil atual. Toque para verificar.';
+    if (snap) {
+        btn.textContent = `▶ Continuar ${formatOperationLabel(snap.operation)} • ${petLevelLabel(snap.level)}`;
+        btn.title = `Retomar ${formatOperationLabel(snap.operation)} no nível ${petLevelLabel(snap.level)}.`;
+    } else if (mission) {
+        btn.textContent = '▶ Missão do dia';
+        btn.title = `${getPetDailyMissionHomeText(mission)} Toque para começar no ponto sugerido.`;
+    } else {
+        btn.textContent = '▶ Continuar';
+        btn.title = 'Nenhum andamento salvo no perfil atual. Toque para verificar.';
+    }
     btn.setAttribute('aria-disabled', 'false');
     try { btn.style.setProperty('pointer-events', 'auto', 'important'); } catch (_) {}
     try { btn.style.setProperty('cursor', 'pointer'); } catch (_) {}
+    try { refreshPetHomeSmartCta(); } catch (_) {}
 }
 function petContinueNow(ev = null) {
     try { if (ev) { ev.preventDefault(); ev.stopPropagation(); } } catch (_) {}
     const snap = loadSavedPetSession();
     if (!snap) {
+        if (startPetDailyMissionNow()) {
+            try { refreshContinueSessionButtonVisibility(); } catch (_) {}
+            return false;
+        }
         const now = Date.now();
         if (!window.__petNoSaveToastAt || (now - window.__petNoSaveToastAt) > 1200) {
             window.__petNoSaveToastAt = now;
@@ -3450,8 +4290,10 @@ window.__petHomeDirectAction = function(actionName, ev = null) {
 };
 function initPetSessionPersistence() {
     ensurePetStorageVersion();
+    ensurePetDailyMission();
     ensureContinueSessionButton();
     refreshContinueSessionButtonVisibility();
+    try { applySavedPetHomePreferences(); } catch (_) {}
     // Salva quando o app perde foco
     try {
         document.addEventListener('visibilitychange', () => {
@@ -3697,6 +4539,44 @@ function updateStoredProfilePin(profileId, pin) {
     saveProfilesIndex(idx);
     return getStoredProfile(profileId);
 }
+function removeQueuedCloudItemsForProfile(profileId) {
+    if (!profileId || !window.PETLocalDriver || !window.PETLocalDriver.loadQueue || !window.PETLocalDriver.saveQueue) return false;
+    try {
+        const queue = Array.isArray(window.PETLocalDriver.loadQueue()) ? window.PETLocalDriver.loadQueue() : [];
+        const filtered = queue.filter((item) => String(item?.deviceProfileId || '').trim() !== String(profileId).trim());
+        if (filtered.length === queue.length) return false;
+        window.PETLocalDriver.saveQueue(filtered);
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+function deleteStoredProfile(profileId, options = {}) {
+    if (!profileId || profileId === PROFILE_GUEST_ID) return false;
+    const targetId = String(profileId).trim();
+    if (!targetId) return false;
+    const idx = loadProfilesIndex();
+    const exists = idx.profiles.some((p) => p.id === targetId);
+    if (!exists) return false;
+    idx.profiles = idx.profiles.filter((p) => p.id !== targetId);
+    saveProfilesIndex(idx);
+    clearScopedProfileData(targetId, PROFILE_SCOPED_KEYS);
+    try {
+        if (window.PETLocalDriver && window.PETLocalDriver.clearCloudLink) {
+            window.PETLocalDriver.clearCloudLink(targetId);
+        }
+    } catch (_) {}
+    try { removeQueuedCloudItemsForProfile(targetId); } catch (_) {}
+    const deletingActive = String(gameState.activeProfileId || '').trim() === targetId;
+    if (deletingActive) {
+        try { localStorage.removeItem(PROFILE_ACTIVE_KEY); } catch (_) {}
+        activateGuestProfileContext();
+        if (!options.keepCloudSession && window.PETAuth && window.PETAuth.signOut) {
+            try { window.PETAuth.signOut(); } catch (_) {}
+        }
+    }
+    return true;
+}
 function touchStoredProfile(profileId) {
     if (!profileId || profileId === PROFILE_GUEST_ID) return;
     const idx = loadProfilesIndex();
@@ -3846,6 +4726,61 @@ function resolveProfileGate(result = true) {
         fn(result);
     }
 }
+
+async function requestMaskedSecret(options = {}) {
+    const title = String(options.title || 'Confirmar senha');
+    const message = String(options.message || 'Digite a senha para continuar.');
+    const placeholder = String(options.placeholder || 'Digite a senha');
+    const confirmLabel = String(options.confirmLabel || 'Confirmar');
+    const cancelLabel = String(options.cancelLabel || 'Cancelar');
+    return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'teacher-overlay';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.innerHTML = `
+          <div class="teacher-panel" style="width:min(420px,94vw);max-height:none;">
+            <div class="teacher-panel-header">
+              <h2 style="margin:0;font-size:1.05rem;">${escapeHtml(title)}</h2>
+            </div>
+            <div class="teacher-panel-section" style="margin-top:0;padding-top:0;border-top:none;">
+              <p class="teacher-help" style="margin-top:0;">${escapeHtml(message)}</p>
+              <label class="tp-label" for="pet-secret-input">Senha</label>
+              <input id="pet-secret-input" class="tp-input" type="password" maxlength="80" placeholder="${escapeHtml(placeholder)}" autocomplete="current-password">
+              <div class="teacher-row" style="margin-top:12px;justify-content:flex-end;">
+                <button type="button" class="btn-action btn-secondary" data-secret-cancel>${escapeHtml(cancelLabel)}</button>
+                <button type="button" class="btn-action" data-secret-confirm>${escapeHtml(confirmLabel)}</button>
+              </div>
+            </div>
+          </div>`;
+        const finish = (value) => {
+            try { overlay.remove(); } catch (_) {}
+            resolve(value);
+        };
+        overlay.addEventListener('click', (ev) => {
+            if (ev.target === overlay) finish(null);
+        });
+        document.body.appendChild(overlay);
+        const input = overlay.querySelector('#pet-secret-input');
+        const cancelBtn = overlay.querySelector('[data-secret-cancel]');
+        const confirmBtn = overlay.querySelector('[data-secret-confirm]');
+        if (cancelBtn) cancelBtn.addEventListener('click', () => finish(null));
+        if (confirmBtn) confirmBtn.addEventListener('click', () => finish(String(input?.value || '').trim()));
+        if (input) {
+            input.focus();
+            input.addEventListener('keydown', (ev) => {
+                if (ev.key === 'Enter') {
+                    ev.preventDefault();
+                    finish(String(input.value || '').trim());
+                } else if (ev.key === 'Escape') {
+                    ev.preventDefault();
+                    finish(null);
+                }
+            });
+        }
+    });
+}
+
 function refreshProfileOverlay() {
     if (!__profileOverlay) return;
     const profiles = getStoredProfiles();
@@ -3859,10 +4794,14 @@ function refreshProfileOverlay() {
     const createShortcutBtn = __profileOverlay.querySelector('#profile-create-shortcut');
     const saveBtn = __profileOverlay.querySelector('#profile-save-current');
     const guestBtn = __profileOverlay.querySelector('#profile-guest');
+    const signoutLocalBtn = __profileOverlay.querySelector('#profile-signout-local');
+    const deleteProfileBtn = __profileOverlay.querySelector('#profile-delete-profile');
     const lockBtn = __profileOverlay.querySelector('#profile-lock');
     const nameEl = __profileOverlay.querySelector('#profile-name');
     const turmaEl = __profileOverlay.querySelector('#profile-turma');
     const escolaEl = __profileOverlay.querySelector('#profile-escola');
+    const currentPinWrapEl = __profileOverlay.querySelector('#profile-current-pin-wrap');
+    const currentPinEl = __profileOverlay.querySelector('#profile-current-pin');
     const pinEl = __profileOverlay.querySelector('#profile-pin');
     const pin2El = __profileOverlay.querySelector('#profile-pin-confirm');
     const formTitleEl = __profileOverlay.querySelector('#profile-form-title');
@@ -3894,14 +4833,19 @@ function refreshProfileOverlay() {
         else if (selected) modeBadgeEl.textContent = selected.mustSetPin ? 'PIN pendente' : 'Perfil selecionado';
         else modeBadgeEl.textContent = profiles.length ? 'Selecione um perfil' : 'Sem perfis';
     }
+    const editingExisting = !!(selected && !__profileCreateMode);
+    const requiresCurrentPinConfirmation = !!(editingExisting && !selected.mustSetPin);
+    const canEditSelected = !editingExisting || !!selected.mustSetPin || (!!selected && selected.id === gameState.activeProfileId && !gameState.isGuestProfile);
     if (selected && !__profileCreateMode) {
         if (nameEl) nameEl.value = selected.name || '';
         if (turmaEl) turmaEl.value = selected.turma || '';
         if (escolaEl) escolaEl.value = selected.escola || '';
-        if (formTitleEl) formTitleEl.textContent = selected.mustSetPin ? 'Complete e defina o PIN' : 'Editar perfil selecionado';
+        if (formTitleEl) formTitleEl.textContent = selected.mustSetPin ? 'Complete e defina o PIN' : 'Alterar perfil atual';
         if (formHintEl) formHintEl.textContent = selected.mustSetPin
             ? 'Esse perfil veio da versão antiga. Defina um PIN para continuar usando no computador compartilhado.'
-            : 'Você pode corrigir nome, turma, escola e trocar o PIN deste perfil.';
+            : (canEditSelected
+                ? 'Para alterar nome, turma, escola ou PIN, confirme primeiro o PIN atual deste perfil.'
+                : 'Entre neste perfil com o PIN correto acima antes de alterar qualquer dado neste dispositivo.');
     } else {
         if (nameEl) nameEl.value = '';
         if (turmaEl) turmaEl.value = '';
@@ -3909,9 +4853,17 @@ function refreshProfileOverlay() {
         if (formTitleEl) formTitleEl.textContent = 'Criar novo perfil';
         if (formHintEl) formHintEl.textContent = 'Use PIN de 4 a 6 dígitos. Este perfil ficará salvo apenas neste computador.';
     }
+    if (currentPinWrapEl) currentPinWrapEl.style.display = requiresCurrentPinConfirmation ? 'block' : 'none';
+    if (currentPinEl) currentPinEl.value = '';
     if (pinEl) pinEl.value = '';
     if (pin2El) pin2El.value = '';
     if (loginPinEl) loginPinEl.value = '';
+    [nameEl, turmaEl, escolaEl, currentPinEl, pinEl, pin2El].forEach((field) => {
+        if (!field) return;
+        const shouldDisable = !canEditSelected || (field === currentPinEl && !requiresCurrentPinConfirmation);
+        field.disabled = !!shouldDisable;
+        field.setAttribute('aria-disabled', shouldDisable ? 'true' : 'false');
+    });
     if (stateEl) {
         stateEl.textContent = selected
             ? `${selected.name || 'Aluno'}${selected.turma ? ` • ${selected.turma}` : ''}`
@@ -3923,10 +4875,34 @@ function refreshProfileOverlay() {
             : 'Selecione um perfil acima ou clique em "Criar novo perfil + PIN".';
     }
     if (enterBtn) enterBtn.disabled = !(selected && !selected.mustSetPin && !!selected.pinHash);
-    if (saveBtn) saveBtn.textContent = (__profileCreateMode || !selected) ? 'Criar perfil e PIN' : (selected.mustSetPin ? 'Salvar perfil e PIN' : 'Salvar alterações');
+    if (saveBtn) {
+        saveBtn.textContent = (__profileCreateMode || !selected)
+            ? 'Criar perfil e PIN'
+            : (!canEditSelected
+                ? 'Entre no perfil para alterar'
+                : (selected.mustSetPin ? 'Salvar perfil e PIN' : 'Salvar alterações'));
+        saveBtn.disabled = !canEditSelected;
+        saveBtn.title = canEditSelected ? '' : 'Entre no perfil atual com o PIN correto antes de alterar este cadastro.';
+    }
     if (createBtn) createBtn.textContent = 'Novo perfil';
     if (createShortcutBtn) createShortcutBtn.textContent = 'Criar novo perfil + PIN';
     if (guestBtn) guestBtn.textContent = 'Entrar como visitante';
+    if (signoutLocalBtn) {
+        const canSignOutCurrentProfile = !gameState.isGuestProfile && !!gameState.activeProfileId && gameState.activeProfileId !== PROFILE_GUEST_ID;
+        signoutLocalBtn.textContent = 'Sair do perfil atual';
+        signoutLocalBtn.style.display = canSignOutCurrentProfile ? 'inline-flex' : 'none';
+        signoutLocalBtn.disabled = !canSignOutCurrentProfile;
+        signoutLocalBtn.title = canSignOutCurrentProfile ? 'Sair do perfil ativo neste dispositivo.' : '';
+    }
+    if (deleteProfileBtn) {
+        const canDeleteSelectedProfile = !!(selected && selected.id && selected.id !== PROFILE_GUEST_ID);
+        deleteProfileBtn.textContent = canDeleteSelectedProfile
+            ? (selected && selected.id === gameState.activeProfileId && !gameState.isGuestProfile ? 'Excluir perfil atual' : 'Excluir perfil selecionado')
+            : 'Excluir perfil';
+        deleteProfileBtn.style.display = canDeleteSelectedProfile ? 'inline-flex' : 'none';
+        deleteProfileBtn.disabled = !canDeleteSelectedProfile;
+        deleteProfileBtn.title = canDeleteSelectedProfile ? 'Exclui o perfil apenas deste dispositivo depois de validar a senha universal.' : '';
+    }
     if (lockBtn) lockBtn.style.display = __profileForceLock ? 'none' : 'inline-flex';
     try { refreshProfileCloudUi(); } catch (_) {}
 }
@@ -3977,6 +4953,8 @@ function ensureProfileUI() {
                 <button id="profile-enter" class="btn-action" type="button">Entrar</button>
                 <button id="profile-create-shortcut" class="btn-action btn-secondary" type="button">Criar novo perfil + PIN</button>
                 <button id="profile-guest" class="btn-action btn-secondary" type="button">Entrar como visitante</button>
+                <button id="profile-signout-local" class="btn-action btn-secondary" type="button" style="display:none;">Sair do perfil atual</button>
+                <button id="profile-delete-profile" class="btn-action btn-secondary" type="button" style="display:none;">Excluir perfil</button>
                 <button id="profile-lock" class="btn-action btn-secondary" type="button">Bloquear acesso</button>
               </div>
             </div>
@@ -3989,7 +4967,11 @@ function ensureProfileUI() {
               <input id="profile-turma" class="tp-input" type="text" maxlength="30" placeholder="Ex.: 701, 8ºA">
               <label class="tp-label">Escola</label>
               <input id="profile-escola" class="tp-input" type="text" maxlength="60" placeholder="Ex.: E.M. ...">
-              <label class="tp-label">PIN</label>
+              <div id="profile-current-pin-wrap" style="display:none;">
+                <label class="tp-label">PIN atual</label>
+                <input id="profile-current-pin" class="tp-input" type="password" inputmode="numeric" maxlength="6" placeholder="Digite o PIN atual para confirmar">
+              </div>
+              <label class="tp-label">Novo PIN</label>
               <input id="profile-pin" class="tp-input" type="password" inputmode="numeric" maxlength="6" placeholder="4 a 6 dígitos">
               <label class="tp-label">Confirmar PIN</label>
               <input id="profile-pin-confirm" class="tp-input" type="password" inputmode="numeric" maxlength="6" placeholder="Repita o PIN">
@@ -4046,6 +5028,69 @@ function ensureProfileUI() {
                 setTimeout(() => { try { window.location.reload(); } catch (_) {} }, 40);
             }
         });
+        overlay.querySelector('#profile-signout-local').addEventListener('click', async () => {
+            if (gameState.isGuestProfile || !gameState.activeProfileId || gameState.activeProfileId === PROFILE_GUEST_ID) {
+                showFeedbackMessage('Nenhum perfil local ativo para sair.', 'warning', 1800);
+                return;
+            }
+            if (!confirm('Sair do perfil atual neste dispositivo? Será preciso entrar novamente com o PIN para continuar.')) return;
+            try {
+                if (window.PETAuth && window.PETAuth.signOut) {
+                    try { await window.PETAuth.signOut(); } catch (_) {}
+                }
+                try { localStorage.removeItem(PROFILE_ACTIVE_KEY); } catch (_) {}
+                __profileSelectedId = null;
+                __profileCreateMode = false;
+                activateGuestProfileContext();
+                showFeedbackMessage('Perfil encerrado neste dispositivo. Entre novamente com o PIN para continuar.', 'info', 2200);
+                closeProfileOverlay(true);
+                setProfileBootToken(PROFILE_GUEST_ID);
+                setTimeout(() => { try { window.location.reload(); } catch (_) {} }, 80);
+            } catch (err) {
+                showFeedbackMessage(`Não foi possível sair do perfil: ${String(err?.message || err)}`, 'error', 2400);
+            }
+        });
+        overlay.querySelector('#profile-delete-profile').addEventListener('click', async () => {
+            const selected = __profileSelectedId ? getStoredProfile(__profileSelectedId) : null;
+            if (!selected || !selected.id || selected.id === PROFILE_GUEST_ID) {
+                showFeedbackMessage('Selecione um perfil válido para excluir.', 'warning', 2000);
+                return;
+            }
+            const typed = await requestMaskedSecret({
+                title: 'Excluir perfil',
+                message: `Para excluir o perfil ${selected.name || 'selecionado'}, digite a senha universal.`,
+                placeholder: 'Senha universal',
+                confirmLabel: 'Validar'
+            });
+            if (typed !== 'bondadejfa') {
+                showFeedbackMessage('Senha universal incorreta. O perfil foi mantido com todos os dados salvos.', 'error', 2600);
+                return;
+            }
+            const deletingActive = String(gameState.activeProfileId || '').trim() === String(selected.id || '').trim() && !gameState.isGuestProfile;
+            const warningText = deletingActive
+                ? `Excluir o perfil atual (${selected.name || 'Aluno'}) deste dispositivo? Isso apaga PIN, progresso, histórico e dados locais salvos neste navegador.`
+                : `Excluir o perfil selecionado (${selected.name || 'Aluno'}) deste dispositivo? Isso apaga PIN, progresso, histórico e dados locais salvos neste navegador.`;
+            if (!confirm(warningText)) return;
+            try {
+                if (deletingActive && window.PETAuth && window.PETAuth.signOut) {
+                    try { await window.PETAuth.signOut(); } catch (_) {}
+                }
+                const ok = deleteStoredProfile(selected.id, { keepCloudSession: true });
+                if (!ok) throw new Error('Não foi possível excluir o perfil selecionado.');
+                __profileSelectedId = null;
+                __profileCreateMode = false;
+                showFeedbackMessage('Perfil excluído deste dispositivo.', 'success', 2200);
+                if (deletingActive) {
+                    closeProfileOverlay(true);
+                    setProfileBootToken(PROFILE_GUEST_ID);
+                    setTimeout(() => { try { window.location.reload(); } catch (_) {} }, 80);
+                    return;
+                }
+                refreshProfileOverlay();
+            } catch (err) {
+                showFeedbackMessage(`Não foi possível excluir o perfil: ${String(err?.message || err)}`, 'error', 2600);
+            }
+        });
         overlay.querySelector('#profile-enter').addEventListener('click', async () => {
             const selected = __profileSelectedId ? getStoredProfile(__profileSelectedId) : null;
             const pin = normalizePin(overlay.querySelector('#profile-login-pin').value);
@@ -4073,6 +5118,7 @@ function ensureProfileUI() {
                 escola: overlay.querySelector('#profile-escola').value
             };
             const safeMeta = sanitizeStudentProfile(meta);
+            const currentPin = normalizePin(overlay.querySelector('#profile-current-pin')?.value || '');
             const pin = normalizePin(overlay.querySelector('#profile-pin').value);
             const pin2 = normalizePin(overlay.querySelector('#profile-pin-confirm').value);
             if (!safeMeta.name) {
@@ -4080,7 +5126,18 @@ function ensureProfileUI() {
                 return;
             }
             const selected = __profileCreateMode ? null : (__profileSelectedId ? getStoredProfile(__profileSelectedId) : null);
+            const changingExistingProfile = !!(selected && !selected.mustSetPin);
             const needsPin = !selected || !!selected.mustSetPin || pin || pin2;
+            if (changingExistingProfile) {
+                if (selected.id !== gameState.activeProfileId || gameState.isGuestProfile) {
+                    showFeedbackMessage('Entre no perfil atual com o PIN correto antes de alterar qualquer dado.', 'error', 2400);
+                    return;
+                }
+                if (!verifyStoredProfilePin(selected.id, currentPin)) {
+                    showFeedbackMessage('PIN atual incorreto. Entre no perfil atual e confirme o PIN antes de alterar este cadastro.', 'error', 2600);
+                    return;
+                }
+            }
             if (needsPin) {
                 if (!isValidProfilePin(pin)) {
                     showFeedbackMessage('Use PIN de 4 a 6 dígitos.', 'error', 1800);
@@ -4088,6 +5145,10 @@ function ensureProfileUI() {
                 }
                 if (pin !== pin2) {
                     showFeedbackMessage('PIN e confirmação não conferem.', 'error', 1800);
+                    return;
+                }
+                if (changingExistingProfile && pin === currentPin) {
+                    showFeedbackMessage('Digite um novo PIN diferente do PIN atual.', 'warning', 2200);
                     return;
                 }
             }
@@ -4103,10 +5164,6 @@ function ensureProfileUI() {
                     setProfileBootToken(created.id);
                     setTimeout(() => { try { window.location.reload(); } catch (_) {} }, 40);
                 }
-                return;
-            }
-            if (selected.id !== gameState.activeProfileId || gameState.isGuestProfile) {
-                showFeedbackMessage('Entre no perfil com o PIN correto antes de alterar este perfil neste dispositivo.', 'error', 2400);
                 return;
             }
             updateStoredProfileMeta(selected.id, safeMeta);
@@ -4877,6 +5934,12 @@ function getOperationLevelProgressRatio(operation, level) {
             return bankSize > 0 ? Math.max(0, Math.min(1, idx / bankSize)) : 0;
         }
         if (operation === 'multiplication') {
+        if (code.includes('multiplication_as_addition') || code.includes('multiplication_sum_instead_product') || code.includes('multiplication_simple_sum') || code.includes('multiplication_added_word_problem')) {
+            return qRepeatedAddition(randFrom(hard ? [2,3] : [2,3,4,5]), hard ? randomInt(2,3) : randomInt(2,4), stageLabel);
+        }
+        if (code.includes('multiplication_skip') || code.includes('multiplication_extra_group') || code.includes('multiplication_missed_one_group') || code.includes('multiplication_factor_shift') || code.includes('multiplication_extra_repetition') || code.includes('multiplication_missing_repetition')) {
+            return qEqualGroups(hard ? randomInt(2,4) : randomInt(2,5), hard ? randomInt(2,3) : randomInt(2,5), stageLabel);
+        }
             const r = getTabuadaRangeByLevel(level);
             const key = `${r.min}-${r.max}|${r.multMin}-${r.multMax}`;
             const bankSize = getTrailTargetSize(r.min, r.max, r.multMin, r.multMax);
@@ -4888,6 +5951,25 @@ function getOperationLevelProgressRatio(operation, level) {
         return 0;
     }
 }
+function hideLevelPedagogyCard() {
+    try {
+        const card = document.getElementById('level-pedagogy-card');
+        if (!card) return;
+        card.classList.add('hidden');
+        card.setAttribute('aria-hidden', 'true');
+    } catch (_) {}
+}
+function showLevelPedagogyCard() {
+    try {
+        const card = ensureLevelPedagogyCard();
+        if (!card) return null;
+        card.classList.remove('hidden');
+        card.setAttribute('aria-hidden', 'false');
+        return card;
+    } catch (_) {
+        return null;
+    }
+}
 function ensureLevelPedagogyCard() {
     try {
         const screen = document.getElementById('level-selection-screen');
@@ -4897,8 +5979,12 @@ function ensureLevelPedagogyCard() {
         card = document.createElement('div');
         card.id = 'level-pedagogy-card';
         card.className = 'info-card level-pedagogy-card';
+        card.setAttribute('aria-hidden', 'false');
         card.innerHTML = `
-            <h2>Liberação pedagógica</h2>
+            <div class="level-pedagogy-head">
+                <h2>Liberação pedagógica</h2>
+                <button id="level-pedagogy-close" class="level-pedagogy-close" type="button" aria-label="Fechar mensagem do mapa de níveis">✕</button>
+            </div>
             <p id="level-pedagogy-summary">Os níveis agora mostram se estão liberados, em consolidação, dominados, bloqueados ou pedindo retorno.</p>
             <div id="level-unlock-progress-card" class="level-unlock-progress-card" aria-live="polite">
                 <div class="level-unlock-progress-head">
@@ -4954,6 +6040,22 @@ function ensureLevelPedagogyCard() {
                 const expanded = explainToggle.getAttribute('aria-expanded') === 'true';
                 explainToggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
                 explainBox.classList.toggle('hidden', expanded);
+            });
+        }
+        const closeBtn = card.querySelector('#level-pedagogy-close');
+        if (closeBtn && !closeBtn.dataset.bound) {
+            closeBtn.dataset.bound = '1';
+            closeBtn.addEventListener('click', () => hideLevelPedagogyCard());
+        }
+        if (!screen.dataset.levelPedagogyOutsideBound) {
+            screen.dataset.levelPedagogyOutsideBound = '1';
+            screen.addEventListener('pointerdown', (e) => {
+                const currentCard = document.getElementById('level-pedagogy-card');
+                if (!currentCard || currentCard.classList.contains('hidden')) return;
+                if (currentCard.contains(e.target)) return;
+                const levelBtn = e.target && typeof e.target.closest === 'function' ? e.target.closest('.level-btn') : null;
+                if (levelBtn) return;
+                hideLevelPedagogyCard();
             });
         }
         return card;
@@ -5099,8 +6201,17 @@ function computePedagogicalUnlockProgressMeta({ evidence = null, blocking = null
         skillProfile: profile
     };
 }
+function getLevelUnlockRuleText(operation, level, stages = [], preferFinalStage = true) {
+    const safeStages = Array.isArray(stages) ? stages : [];
+    const stage = safeStages.length ? (preferFinalStage ? safeStages[safeStages.length - 1] : safeStages[0]) : null;
+    const cfg = getOperationMasteryConfig(operation, stage || {});
+    const targetQuestions = Math.max(1, Number(cfg.stageTarget) || Number(stage?.count) || 10);
+    const targetAccuracyPct = Math.round((Number(cfg.targetAccuracy) || 0.8) * 100);
+    const requiredCorrect = Math.max(1, Math.ceil(targetQuestions * (Number(cfg.targetAccuracy) || 0.8)));
+    return `Regra objetiva do nível: não é pela pontuação final. Em cada etapa, responda ${targetQuestions} quest${targetQuestions === 1 ? 'ão' : 'ões'} e acerte pelo menos ${requiredCorrect} (${targetAccuracyPct}%). Depois, na etapa final, passe na prova de consolidação.`;
+}
 function getNextLevelUnlockProgress(operation, states = null) {
-    const levels = getOperationLevelOrder(operation);
+    const levels = getOperationLevelOrder(operation, { isRapidMode: !!gameState.isRapidMode });
     if (!Array.isArray(levels) || !levels.length) return null;
     const resolvedStates = states || computeOperationLevelPedagogicalStates(operation);
     const firstLockedIndex = levels.findIndex((level, index) => index > 0 && resolvedStates[level]?.code === 'locked');
@@ -5140,21 +6251,26 @@ function getNextLevelUnlockProgress(operation, states = null) {
         skillProfile,
         manualOverride: sourceState?.manualOverride || null
     });
+    const questionCounter = getLevelUnlockQuestionCounterMeta(operation, sourceLevel, { state: sourceState });
     const percent = sourceState?.code === 'mastered' ? 100 : progress.percent;
     const sourceLabel = petLevelLabel(sourceLevel || '');
     const targetLabel = targetLevel ? petLevelLabel(targetLevel) : '';
     let title = targetLabel
         ? `Progresso para liberar ${targetLabel}`
         : `Progresso de domínio em ${sourceLabel}`;
+    const ruleText = getLevelUnlockRuleText(operation, sourceLevel, ctx.stages, true);
     let note = targetLabel
-        ? `Consolide ${sourceLabel} para liberar ${targetLabel}.`
-        : `Consolide ${sourceLabel} para fechar a trilha atual.`;
+        ? `Consolide ${sourceLabel} para liberar ${targetLabel}. ${ruleText}`
+        : `Consolide ${sourceLabel} para fechar a trilha atual. ${ruleText}`;
     if (sourceState?.code === 'mastered') {
         note = targetLabel
-            ? `${sourceLabel} já atingiu domínio suficiente para liberar ${targetLabel}.`
-            : `${sourceLabel} já está dominado.`;
+            ? `${sourceLabel} já atingiu domínio suficiente para liberar ${targetLabel}. ${ruleText}`
+            : `${sourceLabel} já está dominado. ${ruleText}`;
     } else if (progress.missingText) {
         note = `${note} Falta: ${progress.missingText}.`;
+    }
+    if (questionCounter && questionCounter.remainingTotal > 0) {
+        note = `${note} ${questionCounter.note}`.trim();
     }
     return {
         sourceLevel,
@@ -5169,14 +6285,16 @@ function getNextLevelUnlockProgress(operation, states = null) {
         stateCode: sourceState?.code || '',
         bottleneck: progress.bottleneck,
         confidence: progress.confidence,
-        explain: progress.explain,
+        explain: `${progress.explain} ${ruleText}`.trim(),
         skillProfile: progress.skillProfile,
-        nextAction: sourceState?.nextAction || ''
+        nextAction: sourceState?.nextAction || '',
+        ruleText,
+        questionCounter
     };
 }
 function updateLevelUnlockProgressCard(operation, states = null) {
     try {
-        const card = ensureLevelPedagogyCard();
+        const card = showLevelPedagogyCard();
         if (!card) return null;
         const titleEl = document.getElementById('level-unlock-progress-title');
         const valueEl = document.getElementById('level-unlock-progress-value');
@@ -5226,8 +6344,31 @@ function updateLevelUnlockProgressCard(operation, states = null) {
     }
 }
 function computeOperationLevelPedagogicalStates(operation) {
+    if (gameState.isRapidMode && String(operation || '') === 'multiplication') {
+        const levels = getOperationLevelOrder(operation, { isRapidMode: true });
+        const out = {};
+        levels.forEach((level) => {
+            const base = getRapidMultiplicationLevelState(level) || { code: 'released', badge: '✅ Liberado', detail: 'Pode iniciar este nível.', recommendation: '', technicalReason: '', returnLevel: '', missing: '' };
+            out[level] = {
+                ...base,
+                policyLabel: 'Modo Rápido • 80% por nível',
+                stale: false,
+                manualOverride: null,
+                bottleneck: base.code === 'locked'
+                    ? { key: 'rapid_gate', label: 'Pré-requisito', detail: base.missing || base.technicalReason || 'Critério do nível anterior ainda não cumprido.' }
+                    : null,
+                nextAction: base.code === 'locked'
+                    ? `Retomar ${petLevelLabel(base.returnLevel || 'easy', { isRapidMode: true })}.`
+                    : (base.code === 'mastered' && level === 'advanced'
+                        ? 'Trilha concluída no Modo Rápido.'
+                        : (base.recommendation || 'Continue praticando.')),
+                confidence: { label: 'Alta', percent: 100, score: 1 }
+            };
+        });
+        return out;
+    }
     const policy = getPedagogyPolicyConfig();
-    const levels = getOperationLevelOrder(operation);
+    const levels = getOperationLevelOrder(operation, { isRapidMode: !!gameState.isRapidMode });
     const out = {};
     levels.forEach((level, index) => {
         const prev = index > 0 ? levels[index - 1] : null;
@@ -5430,6 +6571,18 @@ function computeOperationLevelPedagogicalStates(operation) {
             confidence: confidenceMeta,
             skillProfile: stateSkillProfile
         };
+        if (gameState.isRapidMode && level === 'easy' && out[level].code !== 'mastered') {
+            out[level] = {
+                ...out[level],
+                code: 'released',
+                badge: '✅ Liberado',
+                detail: 'Ponto de entrada do Modo Rápido.',
+                recommendation: 'No Modo Rápido, Guerreiro fica liberado como entrada direta desta operação.',
+                returnLevel: '',
+                technicalReason: 'entrada rápida liberada por padrão.',
+                missing: ''
+            };
+        }
     });
     return out;
 }
@@ -5437,7 +6590,7 @@ function applyLevelButtonPedagogy(operation, states) {
     try {
         ensureLevelPedagogyCard();
         const summaryEl = document.getElementById('level-pedagogy-summary');
-        const ordered = getOperationLevelOrder(operation).map((level) => states[level]).filter(Boolean);
+        const ordered = getOperationLevelOrder(operation, { isRapidMode: !!gameState.isRapidMode }).map((level) => states[level]).filter(Boolean);
         const priority = ordered.find((it) => it.code === 'return')
             || ordered.find((it) => it.code === 'consolidating')
             || ordered.find((it) => it.code === 'released')
@@ -5472,7 +6625,12 @@ function applyLevelButtonPedagogy(operation, states) {
             chip.textContent = state.badge;
             chip.className = `level-state-chip state-${state.code}`;
             const noteParts = [];
-            if (unlockMeta && unlockMeta.targetLevel === level) noteParts.push(`Progresso para liberar: ${unlockMeta.percent}%`);
+            if (unlockMeta && unlockMeta.targetLevel === level) {
+                noteParts.push(`Progresso para liberar: ${unlockMeta.percent}%`);
+                if (unlockMeta.questionCounter && Number.isFinite(unlockMeta.questionCounter.remainingTotal)) {
+                    noteParts.push(`Faltam ${unlockMeta.questionCounter.remainingTotal} quest${unlockMeta.questionCounter.remainingTotal === 1 ? 'ão' : 'ões'} mínimas`);
+                }
+            }
             if (state.bottleneck?.detail) noteParts.push(`Gargalo: ${state.bottleneck.detail}`);
             if (state.nextAction) noteParts.push(`Ação: ${state.nextAction}`);
             noteParts.push(...[state.technicalReason || '', state.missing || '', state.detail || ''].filter(Boolean));
@@ -5486,7 +6644,16 @@ function applyLevelButtonPedagogy(operation, states) {
             button.disabled = shouldLock;
             button.classList.toggle('locked-level', shouldLock);
             button.setAttribute('aria-disabled', shouldLock ? 'true' : 'false');
-            button.title = [state.badge, unlockMeta && unlockMeta.targetLevel === level ? `Progresso para liberar: ${unlockMeta.percent}%` : '', state.bottleneck?.detail ? `Principal gargalo: ${state.bottleneck.detail}` : '', state.nextAction ? `Próxima ação: ${state.nextAction}` : '', state.confidence?.label ? `Confiança ${state.confidence.label.toLowerCase()} (${state.confidence.percent}%)` : '', state.technicalReason || state.detail || '', state.missing || ''].filter(Boolean).join(' • ');
+            button.title = [
+                state.badge,
+                unlockMeta && unlockMeta.targetLevel === level ? `Progresso para liberar: ${unlockMeta.percent}%` : '',
+                unlockMeta && unlockMeta.targetLevel === level && unlockMeta.questionCounter ? `Faltam ${unlockMeta.questionCounter.remainingTotal} quest${unlockMeta.questionCounter.remainingTotal === 1 ? 'ão' : 'ões'} mínimas` : '',
+                state.bottleneck?.detail ? `Principal gargalo: ${state.bottleneck.detail}` : '',
+                state.nextAction ? `Próxima ação: ${state.nextAction}` : '',
+                state.confidence?.label ? `Confiança ${state.confidence.label.toLowerCase()} (${state.confidence.percent}%)` : '',
+                state.technicalReason || state.detail || '',
+                state.missing || ''
+            ].filter(Boolean).join(' • ');
         });
     } catch (_) {}
 }
@@ -5506,10 +6673,12 @@ function resolveRequestedPedagogicalLevel(operation, requestedLevel) {
 function updateLevelButtonsForOperation(operation) {
     const apprenticeBtn = document.getElementById('level-apprentice-btn');
     const easyBtn = document.querySelector('.level-btn[data-level="easy"]');
+    updateModeAwareLevelCardCopy();
     if (!apprenticeBtn) return;
     const hasApprentice = !!((getOperationTrailStages(String(operation || ''), 'apprentice') || []).length);
-    apprenticeBtn.classList.toggle('hidden', !hasApprentice);
-    apprenticeBtn.setAttribute('aria-hidden', hasApprentice ? 'false' : 'true');
+    const showApprentice = hasApprentice && !gameState.isRapidMode;
+    apprenticeBtn.classList.toggle('hidden', !showApprentice);
+    apprenticeBtn.setAttribute('aria-hidden', showApprentice ? 'false' : 'true');
     if (easyBtn) {
         easyBtn.disabled = false;
         easyBtn.classList.remove('locked-level');
@@ -5523,9 +6692,9 @@ function renderLearningMapPreview(operation) {
     ensureLearningMapUI();
     const rowsEl = document.getElementById('learning-map-rows');
     if (!rowsEl) return;
-    const labels = { apprentice: 'Aprendiz', easy: 'Fácil', medium: 'Médio', advanced: 'Difícil' };
+    const labels = getLevelLabelMap({ isRapidMode: !!gameState.isRapidMode });
     const states = computeOperationLevelPedagogicalStates(operation);
-    const levels = getOperationLevelOrder(operation).map((key) => ({ key, label: labels[key] || key }));
+    const levels = getOperationLevelOrder(operation, { isRapidMode: !!gameState.isRapidMode }).map((key) => ({ key, label: labels[key] || key }));
     const makeNodes = (done, total = 10) => {
         const nodes = [];
         for (let i = 0; i < total; i++) {
@@ -5706,8 +6875,7 @@ function renderRanking() {
             radiciacao: 'Radiciação'
         };
         const opLabel = opMap[e.operation] || e.operation;
-        const lvlMap = { apprentice: 'Aprendiz', easy: 'Fácil', medium: 'Médio', advanced: 'Difícil' };
-        const lvl = lvlMap[e.level] || e.level;
+        const lvl = petLevelLabel(e.level, { isRapidMode: /rápido/i.test(String(e.mode || '')) });
         item.innerHTML = `
             <div class="ranking-left">
                 <div class="ranking-title"><strong>#${idx + 1}</strong> • ${opLabel} • ${lvl} • ${e.mode}${e.submode ? ' • ' + e.submode : ''}</div>
@@ -6373,7 +7541,7 @@ function initTeacherPanel() {
     fab.type = 'button';
     fab.title = 'Painel do Professor';
     fab.setAttribute('aria-label', 'Abrir Painel do Professor');
-    fab.textContent = '👩‍🏫';
+    fab.innerHTML = '<img src="rafael.png" alt="Professor Rafael" class="teacher-fab-avatar">';
     document.body.appendChild(fab);
     const overlay = document.createElement('div');
     overlay.id = 'teacher-panel-overlay';
@@ -6726,7 +7894,7 @@ function initTeacherPanel() {
         if (!pedagogyOperationSel || !pedagogyLevelSel) return;
         const operation = String(pedagogyOperationSel.value || gameState.currentOperation || 'addition');
         const previousLevel = String(preferredLevel || pedagogyLevelSel.value || '').trim();
-        const levels = getOperationLevelOrder(operation).map((levelKey) => ({ value: levelKey, label: petLevelLabel(levelKey) }));
+        const levels = getOperationLevelOrder(operation).map((levelKey) => ({ value: levelKey, label: petLevelLabel(levelKey, { isRapidMode: false }) }));
         fillSelect(pedagogyLevelSel, levels.length ? levels : [{ value: 'easy', label: 'Fácil' }]);
         if (previousLevel && [...pedagogyLevelSel.options].some((opt) => opt.value === previousLevel)) {
             pedagogyLevelSel.value = previousLevel;
@@ -8631,7 +9799,7 @@ function endTraining() {
     try { recordPetCompletedSession({ sessionType: 'treino_erros', upd: gameState.__petProgressUpdate, bonusApplied: Number(gameState.__petBonusXpApplied || 0) }); } catch (_) {}
     exibirTela('result-screen');
     // Prioridade 3+: mostra recompensas/conquistas desta sessão na tela de resultado
-    try { setTimeout(() => { renderPetSessionRewardsOnResultScreen(); }, 80); } catch (_) {}
+    try { setTimeout(() => { renderPetSessionRewardsOnResultScreen(); maybeToastPetPersonalBest(); }, 80); } catch (_) {}
     // Prioridade 2: mostra resumo pós-sessão (modal)
     try { setTimeout(() => { maybeShowSessionSummary(xpGained); }, 350); } catch (_) {}
 }
@@ -8815,7 +9983,7 @@ function updateOperationSkillReviewRecord(operation, level, stageIndex, stageLab
             bucket.independentAsked = Math.max(0, Number(bucket.independentAsked) || 0) + 1;
             if (wasCorrect) bucket.independentCorrect = Math.max(0, Number(bucket.independentCorrect) || 0) + 1;
         }
-        map[key] = {
+        const draftRecord = {
             operation,
             level,
             stageIndex: Math.max(0, Number(stageIndex) || 0),
@@ -8843,6 +10011,17 @@ function updateOperationSkillReviewRecord(operation, level, stageIndex, stageLab
             bridgeStats,
             lastBridgeAt: meta?.isBridgeQuestion ? now : Number(prev.lastBridgeAt || 0)
         };
+        const domain = getStageSkillDomainProfile(draftRecord);
+        draftRecord.domainState = String(domain.stateCode || 'building');
+        draftRecord.domainLabel = String(domain.stateLabel || 'Em construção');
+        draftRecord.masteryScore = Number(domain.masteryScore || 0);
+        draftRecord.reviewWindowDays = Number(domain.reviewWindowDays || 0);
+        draftRecord.nextReviewAt = Number(domain.nextReviewAt || 0);
+        draftRecord.reviewDue = !!domain.due;
+        draftRecord.recommendedSupport = String(domain.recommendedSupport || 'guided');
+        draftRecord.difficultyBand = String(domain.difficultyBand || 'core');
+        draftRecord.autonomyRatio = Number(domain.autonomy || 0);
+        map[key] = draftRecord;
         saveOperationSkillReviewMap(map);
     } catch (_) {}
 }
@@ -8876,6 +10055,228 @@ function getMostCommonTypicalError(record) {
         return ranked.length ? String(ranked[0][0] || '') : '';
     } catch (_) {
         return '';
+    }
+}
+
+function getMostCommonKeyedStat(stats) {
+    try {
+        const entries = (stats && typeof stats === 'object')
+            ? Object.entries(stats).sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+            : [];
+        if (!entries.length) return { key: '', count: 0 };
+        return { key: String(entries[0][0] || ''), count: Math.max(0, Number(entries[0][1]) || 0) };
+    } catch (_) {
+        return { key: '', count: 0 };
+    }
+}
+function clampUnitInterval(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(0, Math.min(1, n));
+}
+function averageRecentAccuracy(items) {
+    const safe = Array.isArray(items) ? items.filter((it) => it && Number.isFinite(Number(it.ok))) : [];
+    if (!safe.length) return 0;
+    return safe.reduce((sum, it) => sum + Number(it.ok || 0), 0) / safe.length;
+}
+function getStageSkillDomainProfile(record) {
+    try {
+        const safe = (record && typeof record === 'object') ? record : null;
+        if (!safe) {
+            return {
+                stateCode: 'new',
+                stateLabel: 'Sem base suficiente',
+                masteryScore: 0.18,
+                recentAcc: 0,
+                independentAcc: 0,
+                autonomy: 0,
+                supportReliance: 0,
+                reviewWindowDays: 1,
+                nextReviewAt: 0,
+                due: false,
+                difficultyBand: 'support',
+                recommendedSupport: 'guided',
+                teacherSignal: 'Coletar mais evidências antes de acelerar.',
+                studentSignal: 'Faça uma rodada curta guiada para montar base nesta habilidade.',
+                maintenanceLabel: 'Ainda sem base para medir retenção.'
+            };
+        }
+        const now = Date.now();
+        const recent = Array.isArray(safe.recentResults) ? safe.recentResults.slice(-5) : [];
+        const recentAcc = averageRecentAccuracy(recent);
+        const totalAsked = Math.max(0, Number(safe.totalAsked) || 0);
+        const totalCorrect = Math.max(0, Number(safe.totalCorrect) || 0);
+        const overallAcc = totalAsked > 0 ? (totalCorrect / totalAsked) : 0;
+        const independentAsked = Math.max(0, Number(safe.independentAsked) || 0);
+        const independentCorrect = Math.max(0, Number(safe.independentCorrect) || 0);
+        const independentAcc = independentAsked > 0 ? (independentCorrect / independentAsked) : 0;
+        const assistedAsked = Math.max(0, Number(safe.assistedAsked) || 0);
+        const supportReliance = (independentAsked + assistedAsked) > 0 ? (assistedAsked / Math.max(1, independentAsked + assistedAsked)) : 0;
+        const autonomy = independentAsked > 0 ? clampUnitInterval(independentAsked / Math.max(1, totalAsked)) : 0;
+        const wrongStreak = Math.max(0, Number(safe.consecutiveWrong) || 0);
+        const lastSeenAt = Math.max(0, Number(safe.lastSeenAt) || 0);
+        const daysSinceSeen = lastSeenAt > 0 ? ((now - lastSeenAt) / (1000 * 60 * 60 * 24)) : 0;
+        let masteryScore = (recentAcc * 0.45) + (independentAcc * 0.35) + (overallAcc * 0.10) + (autonomy * 0.10);
+        masteryScore -= Math.min(0.18, supportReliance * 0.18);
+        masteryScore -= Math.min(0.16, wrongStreak * 0.04);
+        if (daysSinceSeen > 3) masteryScore -= Math.min(0.18, (daysSinceSeen - 3) * 0.03);
+        masteryScore = clampUnitInterval(masteryScore);
+        let stateCode = 'building';
+        let stateLabel = 'Em construção';
+        let reviewWindowDays = 2;
+        let difficultyBand = 'core';
+        let recommendedSupport = 'guided';
+        let teacherSignal = 'Retomar a habilidade com mediação curta e conferir se o erro dominante se repete.';
+        let studentSignal = 'Faça 1 rodada guiada e confirme a regra antes de acelerar.';
+        if (totalAsked < 3 || independentAsked < 1) {
+            stateCode = 'new';
+            stateLabel = 'Sem base suficiente';
+            reviewWindowDays = 1;
+            difficultyBand = 'support';
+            recommendedSupport = 'guided';
+            teacherSignal = 'Coletar mais evidências antes de liberar avanço por domínio.';
+            studentSignal = 'Faça mais uma rodada curta para montar base nesta habilidade.';
+        } else if (masteryScore < 0.46 || wrongStreak >= 3) {
+            stateCode = 'fragile';
+            stateLabel = 'Fragilizada';
+            reviewWindowDays = 1;
+            difficultyBand = 'support';
+            recommendedSupport = wrongStreak >= 3 ? 'very_guided' : 'guided';
+            teacherSignal = 'Intervir agora com contraste entre exemplo certo, erro típico e 1 microtrilha de retomada.';
+            studentSignal = 'Volte 1 passo, resolva em etapas e confirme o mesmo tipo de item sem repetir o erro.';
+        } else if (masteryScore < 0.68) {
+            stateCode = 'building';
+            stateLabel = 'Em construção';
+            reviewWindowDays = 2;
+            difficultyBand = 'core';
+            recommendedSupport = supportReliance > 0.45 ? 'guided' : 'normal';
+            teacherSignal = 'Manter prática guiada curta até aparecer autonomia em itens do mesmo padrão.';
+            studentSignal = 'Tente primeiro com dica rápida; se travar, use a explicação guiada.';
+        } else if (masteryScore < 0.86 || independentAcc < 0.72) {
+            stateCode = 'consolidating';
+            stateLabel = 'Consolidando';
+            reviewWindowDays = 3;
+            difficultyBand = 'core';
+            recommendedSupport = 'normal';
+            teacherSignal = 'Misturar 1 item de revisão e 1 item de transferência para confirmar estabilidade.';
+            studentSignal = 'Resolva sem ajuda e depois confira por uma estratégia diferente.';
+        } else {
+            stateCode = 'mastered';
+            stateLabel = 'Dominada';
+            reviewWindowDays = 5;
+            difficultyBand = 'stretch';
+            recommendedSupport = 'normal';
+            teacherSignal = 'Pode acelerar e revisar só para manutenção.';
+            studentSignal = 'Confirme o domínio em um desafio de transferência ou estratégia.';
+        }
+        const nextReviewAt = lastSeenAt > 0 ? (lastSeenAt + (reviewWindowDays * 24 * 60 * 60 * 1000)) : 0;
+        const due = !!nextReviewAt && now >= nextReviewAt;
+        if (due && stateCode !== 'new') {
+            difficultyBand = 'support';
+            if (stateCode === 'mastered') stateLabel = 'Dominada, mas com revisão vencida';
+            teacherSignal = 'Revisar antes de acelerar: a manutenção desta habilidade venceu.';
+            studentSignal = 'Faça uma revisão curta antes de seguir para itens novos.';
+        }
+        const maintenanceLabel = due
+            ? `Revisão vencida após ${Math.max(1, Math.round(daysSinceSeen))} dia(s) sem prática.`
+            : `Próxima revisão em até ${Math.max(1, reviewWindowDays)} dia(s).`;
+        return {
+            stateCode,
+            stateLabel,
+            masteryScore,
+            recentAcc,
+            independentAcc,
+            autonomy,
+            supportReliance,
+            reviewWindowDays,
+            nextReviewAt,
+            due,
+            daysSinceSeen,
+            difficultyBand,
+            recommendedSupport,
+            teacherSignal,
+            studentSignal,
+            maintenanceLabel
+        };
+    } catch (_) {
+        return {
+            stateCode: 'building',
+            stateLabel: 'Em construção',
+            masteryScore: 0.5,
+            recentAcc: 0,
+            independentAcc: 0,
+            autonomy: 0,
+            supportReliance: 0,
+            reviewWindowDays: 2,
+            nextReviewAt: 0,
+            due: false,
+            difficultyBand: 'core',
+            recommendedSupport: 'guided',
+            teacherSignal: 'Retomar com mediação curta.',
+            studentSignal: 'Use a explicação guiada.',
+            maintenanceLabel: 'Sem dados suficientes.'
+        };
+    }
+}
+function getDominantStageDiagnostic(operation, level, stageIndex, stageLabel) {
+    try {
+        const record = getOperationSkillReviewRecord(operation, level, stageIndex);
+        if (!record || typeof record !== 'object') return null;
+        const topCode = getMostCommonKeyedStat(record.distractorCodes);
+        const topDimension = getMostCommonKeyedStat(record.errorDimensions);
+        const code = String(topCode.key || record.lastDistractorCode || '').trim();
+        const labelMap = (record.distractorLabelMap && typeof record.distractorLabelMap === 'object') ? record.distractorLabelMap : {};
+        const label = String((code && labelMap[code]) || record.lastDistractorLabel || getMostCommonTypicalError(record) || record.lastTypicalError || '').trim();
+        const focus = getTeacherRetakeErrorFocus({ code, label, operation, stageLabel });
+        const domain = getStageSkillDomainProfile(record);
+        return {
+            code,
+            label: label || String(focus?.diagnosis || '').trim(),
+            count: Math.max(0, Number(topCode.count) || 0),
+            errorDimension: String(topDimension.key || '').trim(),
+            focus,
+            domain,
+            record
+        };
+    } catch (_) {
+        return null;
+    }
+}
+function getCurrentQuestionStageDiagnostic(q) {
+    try {
+        const trail = gameState.operationTrail || null;
+        if (!q || !trail || !trail.masteryMode) return null;
+        const meta = getStageKeyFromQuestion(q, trail);
+        return getDominantStageDiagnostic(
+            String(q?.operacao || trail.operation || gameState.currentOperation || ''),
+            String(trail.level || gameState.currentLevel || ''),
+            Math.max(0, Number(meta?.resolvedStageIndex) || 0),
+            String(meta?.resolvedStageLabel || q?.stageLabel || '')
+        );
+    } catch (_) {
+        return null;
+    }
+}
+function getAdaptiveLearningFlowMeta(q, opts = {}) {
+    try {
+        const attempts = Math.max(0, Number((opts.attempts ?? gameState.attemptsThisQuestion) || 0));
+        const stageInsight = getCurrentQuestionStageDiagnostic(q);
+        const supportMode = normalizeAdaptiveSupportMode(q?.supportMode || stageInsight?.domain?.recommendedSupport || gameState.operationTrail?.supportMode || 'normal');
+        let tier = 1;
+        if (supportMode === 'guided' || attempts >= 1) tier = 2;
+        if (supportMode === 'very_guided' || attempts >= 2) tier = 3;
+        if (stageInsight?.domain?.due && tier < 2) tier = 2;
+        if (stageInsight?.domain?.stateCode === 'fragile' && attempts >= 1) tier = 3;
+        return {
+            attempts,
+            supportMode,
+            tier,
+            tierLabel: tier === 1 ? 'Dica rápida' : (tier === 2 ? 'Explicação guiada' : 'Explicação completa'),
+            domainState: String(stageInsight?.domain?.stateLabel || ''),
+            dueReview: !!stageInsight?.domain?.due
+        };
+    } catch (_) {
+        return { attempts: 0, supportMode: 'normal', tier: 1, tierLabel: 'Dica rápida', domainState: '', dueReview: false };
     }
 }
 function getSkillStabilityMeta(record, masteryThreshold = 0.8) {
@@ -9187,11 +10588,23 @@ function pickSmartReviewStageIndex(operation, level, currentStageIndex) {
     const weighted = [];
     for (let i = 0; i < maxIdx; i++) {
         const rec = getOperationSkillReviewRecord(operation, level, i);
+        const domain = getStageSkillDomainProfile(rec);
         let weight = computeSkillWeaknessScore(rec);
         if (!rec) weight = 1 + ((i === maxIdx - 1) ? 0.8 : 0.15 * (i + 1));
+        if (domain.due) weight += 3.4;
+        if (domain.stateCode === 'fragile') weight += 2.1;
+        else if (domain.stateCode === 'building') weight += 1.1;
+        else if (domain.stateCode === 'mastered' && !domain.due) weight -= 0.8;
         if (i === maxIdx - 1) weight += 0.7;
-        weighted.push({ index: i, weight });
+        weighted.push({ index: i, weight: Math.max(0.35, weight) });
     }
+    const dueFirst = weighted
+        .filter((it) => {
+            const rec = getOperationSkillReviewRecord(operation, level, it.index);
+            return getStageSkillDomainProfile(rec).due;
+        })
+        .sort((a, b) => Number(b.weight || 0) - Number(a.weight || 0));
+    if (dueFirst.length) return Number(dueFirst[0].index || 0);
     const picked = weightedPickIndex(weighted);
     return Number.isInteger(picked) ? picked : Math.max(0, maxIdx - 1);
 }
@@ -9312,7 +10725,7 @@ function getAdaptiveSupportLabel(mode) {
     if (safe === 'guided') return 'Guiado';
     return 'Normal';
 }
-function getAdaptiveSupportProfile(operation, level, stageLabel, mode) {
+function getAdaptiveSupportProfile(operation, level, stageLabel, mode, stageInsight = null) {
     const safe = normalizeAdaptiveSupportMode(mode);
     const label = normalizeSkillStageLabel(stageLabel).toLowerCase();
     const profile = {
@@ -9325,6 +10738,10 @@ function getAdaptiveSupportProfile(operation, level, stageLabel, mode) {
     };
     if (safe === 'normal') return profile;
     if (operation === 'addition') {
+        if (code.includes('addition_no_carry') || code.includes('addition_place_value') || code.includes('addition_stopped_partial_sum')) {
+            const pair = randAdditionWithCarry(hard ? 10 : 14, hard ? 24 : 39, 1, hard ? 4 : 7);
+            return qAddition(pair[0], pair[1], stageLabel);
+        }
         profile.supportHint = safe === 'very_guided'
             ? 'Apoio alto: números menores, dica visual de dezenas e alternativas mais separadas.'
             : 'Apoio guiado: números menores e uma pista curta para organizar a soma.';
@@ -9358,17 +10775,31 @@ function getAdaptiveSupportProfile(operation, level, stageLabel, mode) {
             ? 'Apoio alto: fatores menores, grupos visuais e contagem em saltos mais curta.'
             : 'Apoio guiado: pense em grupos iguais ou soma repetida antes de responder.';
     }
+    if (stageInsight && stageInsight.focus && String(stageInsight.label || '').trim()) {
+        const focusLabel = String(stageInsight.label || '').trim();
+        const focusMove = String(stageInsight.focus.studentMove || '').trim();
+        profile.supportHint = `${profile.supportHint} Foco atual: ${focusLabel}.${focusMove ? ` Próximo passo: ${focusMove}` : ''}`.trim();
+    }
     return profile;
 }
 function getCurrentAdaptiveSupportProfile() {
     try {
         const trail = gameState.operationTrail || null;
         if (!trail || !trail.masteryMode) return null;
+        const stageIndex = Math.max(0, Number(gameState.currentQuestion?.masteryStageIndex ?? trail.currentStageIndex) || 0);
+        const stageLabel = gameState.currentQuestion?.stageLabel || gameState.currentQuestion?.masteryStageLabel || trail.currentStageLabel || '';
+        const stageInsight = getDominantStageDiagnostic(
+            gameState.currentOperation,
+            gameState.currentLevel,
+            stageIndex,
+            stageLabel
+        );
         return getAdaptiveSupportProfile(
             gameState.currentOperation,
             gameState.currentLevel,
-            gameState.currentQuestion?.stageLabel || trail.currentStageLabel || '',
-            trail.supportMode || 'normal'
+            stageLabel,
+            trail.supportMode || 'normal',
+            stageInsight
         );
     } catch (_) {
         return null;
@@ -9414,11 +10845,15 @@ function randIntFromList(list) {
     if (!arr.length) return 0;
     return arr[Math.floor(Math.random() * arr.length)];
 }
-function buildAdaptiveSupportQuestion(operation, stageLabel, supportMode) {
+function buildAdaptiveSupportQuestion(operation, stageLabel, supportMode, stageIndex = null, level = '') {
     const safe = normalizeAdaptiveSupportMode(supportMode);
     if (safe === 'normal') return null;
     const hard = safe === 'very_guided';
     const label = normalizeSkillStageLabel(stageLabel).toLowerCase();
+    const stageInsight = Number.isFinite(Number(stageIndex))
+        ? getDominantStageDiagnostic(operation, level || gameState.currentLevel || '', Number(stageIndex), stageLabel)
+        : null;
+    const code = String(stageInsight?.code || '').toLowerCase();
     if (operation === 'addition') {
         if (label.includes('completar') || label.includes('faltante')) {
             const total = hard ? randomInt(4, 10) : randomInt(6, 18);
@@ -9445,6 +10880,10 @@ function buildAdaptiveSupportQuestion(operation, stageLabel, supportMode) {
         return qAddition(hard ? randomInt(0, 9) : randomInt(4, 25), hard ? randomInt(0, 9) : randomInt(2, 18), stageLabel);
     }
     if (operation === 'subtraction') {
+        if (code.includes('subtraction_no_borrow') || code.includes('subtraction_place_value')) {
+            const pair = randSubtractionWithBorrow(hard ? 12 : 18, hard ? 30 : 54, 1, hard ? 9 : 18);
+            return qSubtraction(pair[0], pair[1], stageLabel);
+        }
         if (label.includes('minuendo desconhecido') || label.includes('número que falta')) {
             const diff = hard ? randomInt(2, 15) : randomInt(5, 40);
             const sub = hard ? randomInt(0, 9) : randomInt(3, 25);
@@ -9466,6 +10905,22 @@ function buildAdaptiveSupportQuestion(operation, stageLabel, supportMode) {
         return qSubtraction(hard ? randomInt(6, 20) : randomInt(20, 60), hard ? randomInt(0, 9) : randomInt(4, 25), stageLabel);
     }
     if (operation === 'division') {
+        if (code.includes('division_remainder')) {
+            const divisor = randFrom(hard ? [2,3,4] : [2,3,4,5]);
+            const quotient = hard ? randomInt(2, 5) : randomInt(2, 7);
+            const remainder = randomInt(1, Math.max(1, divisor - 1));
+            return qDivisionRemainder(divisor * quotient + remainder, divisor, stageLabel);
+        }
+        if (code.includes('division_missing_divisor')) {
+            const divisor = randFrom(hard ? [2,3,4] : [2,3,4,5]);
+            const quotient = hard ? randomInt(2, 5) : randomInt(2, 8);
+            return qDivisionFindDivisor(divisor * quotient, quotient, stageLabel);
+        }
+        if (code.includes('division_missing_dividend') || code.includes('division_used_dividend')) {
+            const divisor = randFrom(hard ? [2,3,4] : [2,3,4,5]);
+            const quotient = hard ? randomInt(2, 5) : randomInt(2, 8);
+            return qDivisionFindDividend(divisor, quotient, stageLabel);
+        }
         if (label.includes('resto')) {
             const divisor = randFrom(hard ? [2,3,4] : [2,3,4,5]);
             const quotient = hard ? randomInt(2, 5) : randomInt(2, 7);
@@ -9486,6 +10941,9 @@ function buildAdaptiveSupportQuestion(operation, stageLabel, supportMode) {
         return qDivision(dividend, divisor, stageLabel);
     }
     if (operation === 'potenciacao') {
+        if (code.includes('power_as_multiplication') || code.includes('power_as_sum') || code.includes('power_exponent')) {
+            return qPowerExpanded(randFrom(hard ? [2,3] : [2,3,4]), hard ? 2 : randFrom([2,3]), stageLabel);
+        }
         if (label.includes('expoente 0')) return qPower(randFrom([2,3,4,5]), 0, stageLabel);
         if (label.includes('expoente 1')) return qPower(randFrom([2,3,4,5,6]), 1, stageLabel);
         if (label.includes('cubo')) return qPower(randFrom(hard ? [2,3] : [2,3,4]), 3, stageLabel);
@@ -9493,6 +10951,15 @@ function buildAdaptiveSupportQuestion(operation, stageLabel, supportMode) {
         return qPower(randFrom(hard ? [2,3,4] : [2,3,4,5]), randFrom(hard ? [2] : [2,3]), stageLabel);
     }
     if (operation === 'radiciacao') {
+        if (code.includes('cube_root')) {
+            return qCubeRoot(randIntFromList(hard ? [8, 27] : [8, 27, 64, 125]), stageLabel);
+        }
+        if (code.includes('root_estimation_neighbor') || code.includes('square_root_neighbor')) {
+            return qRootEstimate(randIntFromList(hard ? [9,16,25,36] : [9,16,25,36,49,64,81]), stageLabel);
+        }
+        if (code.includes('root_as_half') || code.includes('square_root_as_half') || code.includes('square_root_as_square') || code.includes('square_root_doubled') || code.includes('root_used_radicand')) {
+            return qRoot(randIntFromList(hard ? [4,9,16,25,36] : [4,9,16,25,36,49,64,81,100]), stageLabel);
+        }
         if (label.includes('cúbica') || label.includes('cubica')) {
             return qCubeRoot(randIntFromList(hard ? [8, 27] : [8, 27, 64, 125]), stageLabel);
         }
@@ -9519,7 +10986,10 @@ function buildAdaptiveSupportQuestion(operation, stageLabel, supportMode) {
 function applyAdaptiveSupportToQuestion(question, meta) {
     if (!question || !meta) return question;
     const safeMode = normalizeAdaptiveSupportMode(meta.supportMode || 'normal');
-    const profile = getAdaptiveSupportProfile(meta.operation, meta.level, meta.stageLabel || question.stageLabel || '', safeMode);
+    const stageInsight = Number.isFinite(Number(meta?.stageIndex))
+        ? getDominantStageDiagnostic(meta.operation, meta.level, Number(meta.stageIndex), meta.stageLabel || question.stageLabel || '')
+        : null;
+    const profile = getAdaptiveSupportProfile(meta.operation, meta.level, meta.stageLabel || question.stageLabel || '', safeMode, stageInsight);
     question.supportMode = profile.mode;
     question.supportLabel = profile.label;
     question.supportHint = profile.supportHint || '';
@@ -9553,34 +11023,41 @@ function maybeAdjustAdaptiveSupportAfterResolution() {
         const stageMap = loadOperationSkillReviewMap();
         const stageKey = getOperationSkillReviewKey(trail.operation, trail.level, Math.max(0, Number(trail.currentStageIndex) || 0));
         const review = (stageMap && typeof stageMap === 'object') ? (stageMap[stageKey] || {}) : {};
+        const stageInsight = getDominantStageDiagnostic(trail.operation, trail.level, Math.max(0, Number(trail.currentStageIndex) || 0), trail.currentStageLabel || '');
+        const domain = stageInsight?.domain || getStageSkillDomainProfile(review);
         const consecutiveWrong = Math.max(0, Number(review.consecutiveWrong) || 0);
-        const heavyStruggle = consecutiveWrong >= 3 || (misses >= 3 && accuracy < 0.55);
-        const moderateStruggle = misses >= 2 || (asked >= 3 && accuracy < 0.7);
+        const heavyStruggle = consecutiveWrong >= 3 || domain.stateCode === 'fragile' || (misses >= 3 && accuracy < 0.55);
+        const moderateStruggle = domain.due || misses >= 2 || (asked >= 3 && accuracy < 0.7);
         if (heavyStruggle) next = 'very_guided';
         else if (moderateStruggle) next = 'guided';
-        else if (asked >= 3 && accuracy >= 0.8) next = 'normal';
+        else if (asked >= 3 && accuracy >= 0.8 && domain.stateCode !== 'building') next = 'normal';
         const changed = next !== current;
         trail.supportMode = next;
+        trail.reviewEvery = domain.due || domain.stateCode === 'fragile' ? 2 : (domain.stateCode === 'mastered' ? 4 : 3);
+        trail.supportDifficultyBand = String(domain.difficultyBand || 'core');
+        trail.nextReviewAt = Number(domain.nextReviewAt || 0);
         if (next === 'normal') {
             trail.supportHint = '';
             trail.supportLaneRemaining = 0;
             trail.supportLaneReason = '';
         } else {
-            const profile = getAdaptiveSupportProfile(trail.operation, trail.level, trail.currentStageLabel || '', next);
+            const profile = getAdaptiveSupportProfile(trail.operation, trail.level, trail.currentStageLabel || '', next, stageInsight);
             trail.supportHint = profile.supportHint || '';
             const targetLane = getAdaptiveLaneSizeForMode(next);
-            if (heavyStruggle || changed) {
+            if (heavyStruggle || changed || domain.due) {
                 trail.supportLaneRemaining = Math.max(Number(trail.supportLaneRemaining || 0), targetLane);
             }
             trail.supportLaneReason = heavyStruggle
                 ? 'Travou nesta habilidade e entrou em rota mais gradual com mediação concreta.'
-                : 'Recebeu apoio guiado para reduzir carga e reorganizar o raciocínio.';
+                : (domain.due
+                    ? 'Esta habilidade voltou para revisão curta antes de seguir para itens novos.'
+                    : 'Recebeu apoio guiado para reduzir carga e reorganizar o raciocínio.');
         }
         if (current === 'normal' && next !== 'normal') {
             trail.supportEscalations = Math.max(0, Number(trail.supportEscalations) || 0) + 1;
         }
         if (gameState.isRapidMode && Number.isFinite(gameState.timeLeft) && Number.isFinite(gameState.maxTime)) {
-            const profile = getAdaptiveSupportProfile(trail.operation, trail.level, trail.currentStageLabel || '', next);
+            const profile = getAdaptiveSupportProfile(trail.operation, trail.level, trail.currentStageLabel || '', next, stageInsight);
             const boosted = Math.round((Number(gameState.maxTime) || 0) * (profile.timeMultiplier || 1));
             if (boosted > Number(gameState.maxTime || 0)) {
                 gameState.maxTime = boosted;
@@ -9589,8 +11066,10 @@ function maybeAdjustAdaptiveSupportAfterResolution() {
         }
         updateAdaptiveSupportPanel();
         if (next !== 'normal' && changed) {
-            const profile = getAdaptiveSupportProfile(trail.operation, trail.level, trail.currentStageLabel || '', next);
+            const profile = getAdaptiveSupportProfile(trail.operation, trail.level, trail.currentStageLabel || '', next, stageInsight);
             showFeedbackControlled(`🛟 ${trail.supportLaneReason} Apoio ${profile.label.toLowerCase()} ativado nesta habilidade. ${profile.supportHint}`, 'info', gameState.isRapidMode ? 5200 : 7600);
+        } else if (next === 'normal' && changed && !gameState.isRapidMode) {
+            showFeedbackControlled('🚀 Apoio gradual concluído nesta habilidade. Volte ao desafio normal e confirme o domínio.', 'info', 5200);
         }
     } catch (_) {}
 }
@@ -9616,8 +11095,10 @@ function setInitialDiagnosticRecord(operation, level, record) {
     map[getOperationTrailKey(operation, level)] = record;
     saveInitialDiagnosticMap(map);
 }
-function getOperationLevelOrder(operation) {
+function getOperationLevelOrder(operation, options = {}) {
     const hasApprentice = !!((getOperationTrailStages(operation, 'apprentice') || []).length);
+    const isRapid = !!(options && options.isRapidMode);
+    if (isRapid) return ['easy', 'medium', 'advanced'];
     return hasApprentice
         ? ['apprentice', 'easy', 'medium', 'advanced']
         : ['easy', 'medium', 'advanced'];
@@ -9684,6 +11165,7 @@ function getDiagnosticSuggestedStageIndex(correctCount, totalStages) {
 function setModeButtonVisualState(isRapid) {
     if (modeRapidoBtn) modeRapidoBtn.classList.toggle('active', !!isRapid);
     if (modeEstudoBtn) modeEstudoBtn.classList.toggle('active', !isRapid);
+    updateModeAwareLevelCardCopy();
 }
 function buildDiagnosticReinforcementText(results) {
     const wrong = Array.isArray(results) ? results.filter((it) => !it.correct) : [];
@@ -10079,7 +11561,9 @@ function buildTeacherInterventionPlan({ operation = '', level = '', stageIndex =
     const prerequisite = getSkillPrerequisiteInfo(operation, stageLabel);
     const traffic = getPedagogicalTrafficLight(record);
     const stability = getSkillStabilityMeta(record);
-    const commonError = getMostCommonTypicalError(record) || 'Sem erro típico dominante ainda.';
+    const dominantStage = getDominantStageDiagnostic(operation, level, stageIndex, stageLabel);
+    const domain = dominantStage?.domain || getStageSkillDomainProfile(record);
+    const commonError = dominantStage?.label || getMostCommonTypicalError(record) || 'Sem erro típico dominante ainda.';
     const parts = [];
     if (traffic.code === 'red') parts.push('Aplicar 1 rodada guiada imediatamente.');
     else if (traffic.code === 'yellow') parts.push('Aplicar 1 retomada curta antes de acelerar.');
@@ -10087,11 +11571,16 @@ function buildTeacherInterventionPlan({ operation = '', level = '', stageIndex =
     parts.push(prerequisite.action);
     if (prerequisite.avoidRapid) parts.push('Evitar Modo Rápido nesta habilidade até estabilizar.');
     if (stability.code === 'drop') parts.push('O domínio caiu: revisar essa habilidade por 2 sessões curtas.');
+    if (domain?.teacherSignal) parts.push(`Domínio atual: ${domain.stateLabel}. ${domain.teacherSignal}`);
+    if (domain?.due) parts.push(`Revisão vencida: ${domain.maintenanceLabel}`);
+    if (dominantStage?.focus?.teacherMove) parts.push(`Prioridade automática: ${dominantStage.focus.teacherMove}`);
+    if (dominantStage?.focus?.checkpoint) parts.push(`Checkpoint sugerido: ${dominantStage.focus.checkpoint}`);
+    if (Array.isArray(studentNames) && studentNames.length > 1 && commonError) parts.push('Agrupe esses alunos pelo mesmo padrão de erro e faça uma microintervenção antes da prática individual.');
     const who = Array.isArray(studentNames) && studentNames.length ? `Aluno(s): ${studentNames.join(', ')}.` : '';
     return {
         prerequisite: prerequisite.label,
         commonError,
-        stability: stability.label,
+        stability: `${stability.label} • ${domain?.stateLabel || 'Sem base suficiente'}`,
         traffic: traffic.label,
         planText: `${who} ${parts.join(' ')}`.trim()
     };
@@ -11329,6 +12818,7 @@ function startDiagnosticSession(operation, level, options = {}) {
         : !!gameState.isRapidMode;
     gameState.currentOperation = operation;
     gameState.currentLevel = level;
+    try { updatePetHomePrefs({ operation, level, mode: gameState.isRapidMode ? 'rapid' : 'study' }); } catch (_) {}
     gameState.operationTrail = { operation: '', level: '', key: '', startIndex: 0, bankSize: 0, totalStages: plan.length };
     gameState.isGameActive = true;
     gameState.isDiagnosticMode = true;
@@ -12214,8 +13704,9 @@ function qRoot(square, label) {
     return buildQuestionPayload('radiciacao', square, null, root, `√${square}`, `raiz quadrada de ${square}`, label);
 }
 function qRootEstimate(square, label) {
-    const root = Math.round(Math.sqrt(square));
-    return buildQuestionPayload('radiciacao', square, null, root, `√${square} (aproximada)`, `raiz quadrada aproximada de ${square}`, label);
+    const low = Math.floor(Math.sqrt(square));
+    const high = low + 1;
+    return buildQuestionPayload('radiciacao', square, 2, low, `√${square} está entre ${low} e ${high}. Qual é a raiz inteira mais próxima por baixo`, `a raiz de ${square} está entre ${low} e ${high}. Qual é a raiz inteira mais próxima por baixo`, label);
 }
 function qCubeRoot(cube, label) {
     const root = Math.round(Math.cbrt(cube));
@@ -12356,9 +13847,20 @@ function buildAdditionContextAuditQuestion(label) {
 function buildAdditionEstimateAuditQuestion(label) {
     const a = randFrom([198, 199, 297, 398, 499, 598]);
     const b = randFrom([17, 24, 36, 48, 59, 71, 84]);
-    const estimate = Math.round(a / 10) * 10 + Math.round(b / 10) * 10;
-    const q = buildQuestionPayload('addition', a, b, estimate, `Sem calcular exatamente, ${a} + ${b} fica mais perto de qual estimativa`, `sem calcular exatamente, ${a} mais ${b} fica mais perto de qual estimativa`, label);
+    const roundedA = Math.round(a / 10) * 10;
+    const roundedB = Math.round(b / 10) * 10;
+    const estimate = roundedA + roundedB;
+    const q = buildQuestionPayload(
+        'addition',
+        a,
+        b,
+        estimate,
+        `Arredonde ${a} para ${roundedA} e ${b} para ${roundedB}. Depois estime: ${a} + ${b}`,
+        `arredonde ${a} para ${roundedA} e ${b} para ${roundedB}. depois estime ${a} mais ${b}`,
+        label
+    );
     q.auditStageVariant = 'addition-estimate';
+    q.roundingSupport = { roundedA, roundedB, placeValue: 10 };
     return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
 }
 function buildAdditionDecompositionAuditQuestion(label) {
@@ -12876,7 +14378,7 @@ function getOperationTrailStages(operation, level) {
                 makeStage('Divisão em problema contextual', 10, () => { const divisor=randFrom([4,5,6,7,8,9]); const quotient=randomInt(4,20); return qDivision(divisor*quotient, divisor, 'Divisão em problema contextual'); }),
                 makeStage('Relação entre múltiplos e divisores', 10, () => { const divisor=randFrom([4,5,6,7,8,9,10]); const quotient=randomInt(4,20); return qDivision(divisor*quotient, divisor, 'Relação entre múltiplos e divisores'); }),
                 makeStage('Conferência pela multiplicação', 10, () => { const divisor=randFrom([4,5,6,7,8,9]); const quotient=randomInt(4,18); return qDivision(divisor*quotient, divisor, 'Conferência pela multiplicação'); }),
-                makeStage('Estimativa do quociente', 10, () => { const divisor=randFrom([4,5,6,7,8,9]); const quotient=randomInt(10,30); return qDivision(divisor*quotient + randFrom([0, divisor-1]), divisor, 'Estimativa do quociente'); }),
+                makeStage('Estimativa do quociente', 10, () => buildDivisionEstimateAuditQuestion('Estimativa do quociente')),
                 makeStage('Erros comuns de divisão', 10, () => { const divisor=randFrom([4,5,6,7,8,9]); const quotient=randomInt(3,18); return qDivisionFindDivisor(divisor*quotient, quotient, 'Erros comuns de divisão'); }),
                 makeStage('Revisão mista do nível', 10, () => { const pool=[() => { const divisor=randFrom([4,5,6,7,8,9]); const quotient=randomInt(3,18); return qDivision(divisor*quotient, divisor, 'Revisão mista do nível'); }, () => { const divisor=randFrom([4,5,6,7,8,9]); const quotient=randomInt(3,18); const rest=randomInt(1, divisor-1); return qDivisionRemainder(divisor*quotient + rest, divisor, 'Revisão mista do nível'); }, () => { const divisor=randFrom([4,5,6,7,8,9]); const quotient=randomInt(3,18); return qDivisionFindDivisor(divisor*quotient, quotient, 'Revisão mista do nível'); }]; return randFrom(pool)(); }),
                 makeStage('Domínio final do nível', 10, () => { const pool=[() => { const divisor=randFrom([4,5,6,7,8,9,10]); const quotient=randomInt(5,24); return qDivision(divisor*quotient, divisor, 'Domínio final do nível'); }, () => { const divisor=randFrom([4,5,6,7,8,9]); const quotient=randomInt(4,18); const rest=randomInt(1, divisor-1); return qDivisionRemainder(divisor*quotient + rest, divisor, 'Domínio final do nível'); }]; return randFrom(pool)(); })
@@ -13135,7 +14637,14 @@ function generateQuestionFromOperationTrail(operation) {
         const asked = Math.max(0, Number(trail.currentStageAsked) || 0);
         let sourceStageIndex = currentStageIndex;
         let isReview = false;
-        if (currentStageIndex > 0 && !trail.lastQuestionWasReview && asked > 0 && asked < stageTarget && (asked % reviewEvery === 0)) {
+        const dueReviewIndex = currentStageIndex > 0 ? pickSmartReviewStageIndex(operation, trail.level, currentStageIndex) : 0;
+        const dueRecord = currentStageIndex > 0 ? getOperationSkillReviewRecord(operation, trail.level, dueReviewIndex) : null;
+        const dueDomain = getStageSkillDomainProfile(dueRecord);
+        const shouldForceDueReview = currentStageIndex > 0 && !trail.lastQuestionWasReview && !!dueDomain?.due && asked > 0;
+        if (shouldForceDueReview) {
+            sourceStageIndex = dueReviewIndex;
+            isReview = true;
+        } else if (currentStageIndex > 0 && !trail.lastQuestionWasReview && asked > 0 && asked < stageTarget && (asked % reviewEvery === 0)) {
             sourceStageIndex = pickSmartReviewStageIndex(operation, trail.level, currentStageIndex);
             if (!Number.isInteger(sourceStageIndex)) sourceStageIndex = Math.max(0, currentStageIndex - 1);
             isReview = true;
@@ -13501,6 +15010,13 @@ function getNextRoundMultiplier() {
     return v;
 }
 // --- UI: Progresso do ciclo (Tabuada) ---
+function closeCycleProgressBadge(preserveDismiss = true) {
+    const el = ensureCycleProgressBadge();
+    if (preserveDismiss && cycleProgressBadgeLastText) {
+        cycleProgressBadgeDismissedText = cycleProgressBadgeLastText;
+    }
+    el.style.display = 'none';
+}
 function ensureCycleProgressBadge() {
     if (cycleProgressBadge) return cycleProgressBadge;
     const el = document.createElement('div');
@@ -13508,8 +15024,31 @@ function ensureCycleProgressBadge() {
     el.className = 'mm-cycle-progress';
     el.style.display = 'none';
     el.setAttribute('aria-live', 'polite');
+    el.setAttribute('role', 'status');
+    const content = document.createElement('div');
+    content.className = 'mm-cycle-progress__content';
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'mm-cycle-progress__close';
+    closeBtn.setAttribute('aria-label', 'Fechar');
+    closeBtn.textContent = '✕';
+    closeBtn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeCycleProgressBadge(true);
+    });
+    el.appendChild(content);
+    el.appendChild(closeBtn);
+    el.addEventListener('click', (ev) => ev.stopPropagation());
+    document.addEventListener('pointerdown', (ev) => {
+        if (!cycleProgressBadge || cycleProgressBadge.style.display === 'none') return;
+        if (cycleProgressBadge.contains(ev.target)) return;
+        closeCycleProgressBadge(true);
+    }, true);
     document.body.appendChild(el);
     cycleProgressBadge = el;
+    cycleProgressBadgeContent = content;
+    cycleProgressBadgeCloseBtn = closeBtn;
     return el;
 }
 function hideCycleProgressBadge() {
@@ -13537,6 +15076,153 @@ function hideCycleProgressBadge() {
     } catch (e) {}
     el.style.display = 'none';
 }
+function getMasteryStageRequirementMeta(trail = null) {
+    const t = trail && typeof trail === 'object' ? trail : (gameState.operationTrail || null);
+    if (!t || !t.masteryMode) return null;
+    const targetQuestions = Math.max(1, Number(t.stageTarget) || 1);
+    const targetAccuracy = Math.max(0.01, Math.min(1, Number(t.targetAccuracy) || 0.8));
+    const requiredCorrect = Math.max(1, Math.ceil(targetQuestions * targetAccuracy));
+    const asked = Math.max(0, Number(t.currentStageAsked) || 0);
+    const correct = Math.max(0, Number(t.currentStageCorrect) || 0);
+    const remainingQuestions = Math.max(0, targetQuestions - asked);
+    const remainingCorrect = Math.max(0, requiredCorrect - correct);
+    return {
+        targetQuestions,
+        targetAccuracy,
+        targetAccuracyPct: Math.round(targetAccuracy * 100),
+        requiredCorrect,
+        asked,
+        correct,
+        remainingQuestions,
+        remainingCorrect,
+        currentAccuracyPct: asked > 0 ? Math.round((correct / asked) * 100) : 0
+    };
+}
+function describeMasteryStageRule(trail = null) {
+    const meta = getMasteryStageRequirementMeta(trail);
+    if (!meta) return '';
+    const qWord = meta.targetQuestions === 1 ? 'questão' : 'questões';
+    const cWord = meta.requiredCorrect === 1 ? 'acerto' : 'acertos';
+    return `Para avançar, feche ${meta.targetQuestions} ${qWord} e faça pelo menos ${meta.requiredCorrect} ${cWord} (${meta.targetAccuracyPct}%).`;
+}
+
+function getLevelUnlockQuestionCounterMeta(operation, level, options = {}) {
+    try {
+        const safeOperation = String(operation || '').trim();
+        const safeLevel = String(level || '').trim();
+        if (!safeOperation || !safeLevel) return null;
+        const stages = getOperationTrailStages(safeOperation, safeLevel) || [];
+        if (!Array.isArray(stages) || !stages.length) return null;
+        const totalStages = stages.length;
+        const activeTrail = options.trail && typeof options.trail === 'object'
+            ? options.trail
+            : ((gameState.operationTrail && gameState.operationTrail.masteryMode && gameState.operationTrail.operation === safeOperation && gameState.operationTrail.level === safeLevel)
+                ? gameState.operationTrail
+                : null);
+        const sourceState = options.state && typeof options.state === 'object' ? options.state : null;
+        if (sourceState?.code === 'mastered') {
+            return {
+                totalRequired: 0,
+                answeredMin: 0,
+                remainingTotal: 0,
+                remainingCurrentStage: 0,
+                remainingFutureStages: 0,
+                remainingConsolidation: 0,
+                currentStageIndex: Math.max(0, totalStages - 1),
+                totalStages,
+                currentStageTarget: 0,
+                planLength: 0,
+                consolidationMode: false,
+                currentStageLabel: String(stages[Math.max(0, totalStages - 1)]?.label || 'Etapa final').trim(),
+                requiredAccuracyPct: 80,
+                stageRequiredCorrect: 0,
+                currentStageAsked: 0,
+                currentStageCorrect: 0,
+                stageRemainingCorrect: 0,
+                totalAnsweredMin: 0,
+                note: 'Próximo nível já liberado.'
+            };
+        }
+        const stageTargetFor = (stage) => {
+            const cfg = getOperationMasteryConfig(safeOperation, stage || {});
+            return Math.max(1, Number(cfg.stageTarget) || Number(stage?.count) || 10);
+        };
+        const finalCfg = getOperationMasteryConfig(safeOperation, stages[stages.length - 1] || {});
+        const requiredAccuracy = Math.max(0.01, Math.min(1, Number(finalCfg.targetAccuracy) || 0.8));
+        const requiredAccuracyPct = Math.round(requiredAccuracy * 100);
+        const unlockedIdx = activeTrail
+            ? Math.max(0, Math.min(totalStages - 1, Number(activeTrail.currentStageIndex) || 0))
+            : Math.max(0, Math.min(totalStages - 1, getSavedOperationStageUnlock(safeOperation, safeLevel, totalStages)));
+        const currentStageIndex = unlockedIdx;
+        const currentStage = stages[currentStageIndex] || stages[0];
+        const currentStageTarget = stageTargetFor(currentStage);
+        const currentStageAsked = activeTrail && !activeTrail.consolidationMode
+            ? Math.max(0, Number(activeTrail.currentStageAsked) || 0)
+            : 0;
+        const currentStageCorrect = activeTrail && !activeTrail.consolidationMode
+            ? Math.max(0, Number(activeTrail.currentStageCorrect) || 0)
+            : 0;
+        const remainingCurrentStage = activeTrail && !activeTrail.consolidationMode
+            ? Math.max(0, currentStageTarget - currentStageAsked)
+            : currentStageTarget;
+        let remainingFutureStages = 0;
+        for (let i = currentStageIndex + 1; i < totalStages; i++) {
+            remainingFutureStages += stageTargetFor(stages[i]);
+        }
+        const plan = buildLevelConsolidationPlan(safeOperation, safeLevel) || [];
+        const planLength = Array.isArray(plan) ? plan.length : 0;
+        const consolidationMode = !!(activeTrail && activeTrail.consolidationMode);
+        const consolidationAsked = consolidationMode
+            ? Math.max(0, Number(activeTrail?.consolidation?.asked) || 0)
+            : 0;
+        const remainingConsolidation = consolidationMode
+            ? Math.max(0, planLength - consolidationAsked)
+            : planLength;
+        const totalRequired = stages.reduce((sum, stage) => sum + stageTargetFor(stage), 0) + planLength;
+        const remainingTotal = consolidationMode
+            ? remainingConsolidation
+            : Math.max(0, remainingCurrentStage + remainingFutureStages + remainingConsolidation);
+        const answeredMin = Math.max(0, totalRequired - remainingTotal);
+        const stageRequiredCorrect = Math.max(1, Math.ceil(currentStageTarget * requiredAccuracy));
+        const stageRemainingCorrect = Math.max(0, stageRequiredCorrect - currentStageCorrect);
+        const currentStageLabel = consolidationMode
+            ? 'Consolidação'
+            : String(activeTrail?.currentStageLabel || currentStage?.label || 'Etapa atual').trim();
+        return {
+            totalRequired,
+            answeredMin,
+            remainingTotal,
+            remainingCurrentStage,
+            remainingFutureStages,
+            remainingConsolidation,
+            currentStageIndex,
+            totalStages,
+            currentStageTarget,
+            planLength,
+            consolidationMode,
+            currentStageLabel,
+            requiredAccuracyPct,
+            stageRequiredCorrect,
+            currentStageAsked,
+            currentStageCorrect,
+            stageRemainingCorrect,
+            totalAnsweredMin: answeredMin,
+            note: remainingTotal > 0
+                ? `Faltam pelo menos ${remainingTotal} quest${remainingTotal === 1 ? 'ão' : 'ões'} para liberar o próximo nível, mantendo ${requiredAccuracyPct}% em cada etapa.`
+                : 'Próximo nível já pode ser liberado.'
+        };
+    } catch (_) {
+        return null;
+    }
+}
+function describeLevelUnlockQuestionCounter(meta) {
+    if (!meta) return '';
+    const totalTxt = `Faltam ${meta.remainingTotal} quest${meta.remainingTotal === 1 ? 'ão' : 'ões'} para liberar o próximo nível.`;
+    if (meta.consolidationMode) {
+        return `${totalTxt} Agora você está na consolidação: faltam ${meta.remainingConsolidation} questão${meta.remainingConsolidation === 1 ? '' : 'ões'} e precisa manter ${meta.requiredAccuracyPct}% de aproveitamento.`;
+    }
+    return `${totalTxt} Nesta etapa, faltam ${meta.remainingCurrentStage} questão${meta.remainingCurrentStage === 1 ? '' : 'ões'} e o mínimo é ${meta.stageRequiredCorrect}/${meta.currentStageTarget} acertos (${meta.requiredAccuracyPct}%).`;
+}
 function updateCycleProgressUI() {
     const el = ensureCycleProgressBadge();
     const isMultiplication = (gameState.currentOperation === 'multiplication');
@@ -13544,21 +15230,52 @@ function updateCycleProgressUI() {
     const isGameScreen = (gameState.currentScreen === 'game-screen');
     const hasMasteryTrail = !!(gameState.operationTrail && gameState.operationTrail.masteryMode);
     if (!isGameScreen) {
+        cycleProgressBadgeLastText = '';
         el.style.display = 'none';
         return;
     }
     if (hasMasteryTrail) {
         const t = gameState.operationTrail;
         const stageName = String(t.currentStageLabel || gameState.currentQuestion?.masteryStageLabel || gameState.currentQuestion?.stageLabel || 'Etapa atual');
-        const asked = Math.max(0, Number(t.currentStageAsked) || 0);
-        const correct = Math.max(0, Number(t.currentStageCorrect) || 0);
-        const target = Math.max(1, Number(t.stageTarget) || 1);
-        const acc = asked > 0 ? Math.round((correct / asked) * 100) : 0;
+        const req = getMasteryStageRequirementMeta(t);
         const supportTxt = normalizeAdaptiveSupportMode(t.supportMode || 'normal') !== 'normal'
             ? ` • Apoio ${getAdaptiveSupportLabel(t.supportMode)}`
             : '';
-        el.textContent = `Etapa ${Number(t.currentStageIndex || 0) + 1}/${Number(t.totalStages || 1)}: ${stageName} • Domínio ${correct}/${target} (${acc}%)${supportTxt}`;
-        el.style.display = 'inline-flex';
+        if (req) {
+            const unlockMeta = !gameState.isRapidMode
+                ? getLevelUnlockQuestionCounterMeta(gameState.currentOperation, gameState.currentLevel, { trail: t })
+                : null;
+            const faltaTxt = req.remainingQuestions > 0
+                ? ` • Faltam ${req.remainingQuestions} quest${req.remainingQuestions === 1 ? 'ão' : 'ões'} nesta etapa`
+                : ' • Bloco da etapa fechado';
+            const acertoTxt = req.remainingCorrect > 0
+                ? ` • Ainda faltam ${req.remainingCorrect} acerto${req.remainingCorrect === 1 ? '' : 's'} para atingir 80%`
+                : ' • Critério de 80% alcançado';
+            const unlockTxt = unlockMeta && unlockMeta.remainingTotal > 0
+                ? ` • Para liberar o próximo nível: faltam ${unlockMeta.remainingTotal} quest${unlockMeta.remainingTotal === 1 ? 'ão' : 'ões'}`
+                : (unlockMeta ? ' • Próximo nível quase liberado' : '');
+            const badgeText = `Etapa ${Number(t.currentStageIndex || 0) + 1}/${Number(t.totalStages || 1)}: ${stageName} • Respondidas ${req.asked}/${req.targetQuestions}${faltaTxt} • Regra ${req.requiredCorrect}/${req.targetQuestions} (${req.targetAccuracyPct}%)${acertoTxt}${unlockTxt}${supportTxt}`;
+            cycleProgressBadgeLastText = badgeText;
+            if (cycleProgressBadgeDismissedText !== badgeText) {
+                if (cycleProgressBadgeContent) cycleProgressBadgeContent.textContent = badgeText;
+                else el.textContent = badgeText;
+                el.style.display = 'inline-flex';
+            } else {
+                el.style.display = 'none';
+            }
+            el.title = `${describeMasteryStageRule(t)} ${unlockMeta ? describeLevelUnlockQuestionCounter(unlockMeta) : ''}`.trim();
+        } else {
+            const badgeText = `Etapa ${Number(t.currentStageIndex || 0) + 1}/${Number(t.totalStages || 1)}: ${stageName}${supportTxt}`;
+            cycleProgressBadgeLastText = badgeText;
+            if (cycleProgressBadgeDismissedText !== badgeText) {
+                if (cycleProgressBadgeContent) cycleProgressBadgeContent.textContent = badgeText;
+                else el.textContent = badgeText;
+                el.style.display = 'inline-flex';
+            } else {
+                el.style.display = 'none';
+            }
+            el.title = '';
+        }
         return;
     }
     if (!isMultiplication || !hasMultCfg) {
@@ -13573,8 +15290,15 @@ function updateCycleProgressUI() {
         const mMax = Number.isInteger(gameState.multiplication.multMax) ? gameState.multiplication.multMax : 20;
         const bankSize = getTrailPairsBankSize(tMin, tMax, mMin, mMax);
         const current = Math.min(Math.max(Number(gameState.multiplication.trailPairIndex || 0), 0), bankSize);
-        el.textContent = `Progresso do ciclo: ${current}/${bankSize}`;
-        el.style.display = 'inline-flex';
+        const badgeText = `Progresso do ciclo: ${current}/${bankSize}`;
+        cycleProgressBadgeLastText = badgeText;
+        if (cycleProgressBadgeDismissedText !== badgeText) {
+            if (cycleProgressBadgeContent) cycleProgressBadgeContent.textContent = badgeText;
+            else el.textContent = badgeText;
+            el.style.display = 'inline-flex';
+        } else {
+            el.style.display = 'none';
+        }
         return;
     }
     // Direto: mostra progresso da tabuada (ex.: 6/11)
@@ -13582,8 +15306,15 @@ function updateCycleProgressUI() {
     const mMax = Number.isInteger(gameState.multiplication.multMax) ? gameState.multiplication.multMax : 20;
     const total = Math.max(0, (mMax - mMin + 1));
     const current = Math.min(Math.max(Number(gameState.multiplication.roundPos || 0), 0), total);
-    el.textContent = `Progresso da tabuada: ${current}/${total}`;
-    el.style.display = 'inline-flex';
+    const badgeText = `Progresso da tabuada: ${current}/${total}`;
+    cycleProgressBadgeLastText = badgeText;
+    if (cycleProgressBadgeDismissedText !== badgeText) {
+        if (cycleProgressBadgeContent) cycleProgressBadgeContent.textContent = badgeText;
+        else el.textContent = badgeText;
+        el.style.display = 'inline-flex';
+    } else {
+        el.style.display = 'none';
+    }
 }
 // Modal: escolha de Tabuada / Trilha
 function ensureMultiplicationModal() {
@@ -14365,6 +16096,101 @@ function buildQuestionStrategicHintText(q) {
 }
 
 
+function buildQuestionCommonErrors(q) {
+    const ctx = getQuestionPedagogicalContext(q);
+    const op = String(ctx.op || q?.operacao || gameState.currentOperation || '');
+    if (ctx.bridge === 'addition-subtraction') return [
+        { label: 'Somar em vez de descobrir a parte que falta', cause: 'A soma-pista é lida como conta final.', recovery: 'Volte ao todo e retire a parte conhecida.' },
+        { label: 'Escolher a parte conhecida como resposta', cause: 'O aluno identifica o dado, mas não a pergunta.', recovery: 'Releia qual parte está faltando.' }
+    ];
+    if (ctx.bridge === 'multiplication-division') return [
+        { label: 'Confundir grupos com quantidade em cada grupo', cause: 'A divisão é lida sem decidir o que está sendo perguntado.', recovery: 'Pergunte: a resposta é grupos ou quantidade em cada grupo?' },
+        { label: 'Usar o total como resposta', cause: 'O número maior do enunciado vira palpite automático.', recovery: 'Confira se a resposta pode ser maior do que o total.' }
+    ];
+    if (ctx.isRepeatedAddition) return [
+        { label: 'Tratar como adição comum', cause: 'A repetição da mesma parcela passa despercebida.', recovery: 'Conte quantas vezes a parcela aparece e troque por grupos iguais.' },
+        { label: 'Trocar grupos por elementos', cause: 'O aluno confunde frequência com tamanho do grupo.', recovery: 'Nomeie grupos e quantidade em cada grupo.' }
+    ];
+    if (op === 'addition') return [
+        { label: 'Misturar ordens', cause: 'Unidades, dezenas e centenas não são separadas.', recovery: 'Some por ordens antes do total.' },
+        { label: 'Ignorar termo faltante', cause: 'A soma inteira é feita mesmo quando a pergunta pede a parte escondida.', recovery: 'Use a operação inversa para achar a parcela que falta.' }
+    ];
+    if (op === 'subtraction') return [
+        { label: 'Somar em vez de subtrair', cause: 'A ação de retirar ou comparar não foi identificada.', recovery: 'Decida se a questão pede sobra ou diferença.' },
+        { label: 'Errar a reserva', cause: 'As ordens não são comparadas antes da conta.', recovery: 'Veja se a unidade do minuendo é menor que a do subtraendo.' }
+    ];
+    if (op === 'multiplication') return [
+        { label: 'Trocar produto por soma', cause: 'A multiplicação é lida sem a ideia de grupos iguais.', recovery: 'Represente em grupos iguais ou soma repetida.' },
+        { label: 'Perder o fator faltante', cause: 'O produto é visto como resposta pronta.', recovery: 'Use a divisão para recuperar o fator escondido.' }
+    ];
+    if (op === 'division') return [
+        { label: 'Confundir quociente com resto', cause: 'Grupos completos e sobra são tratados como a mesma resposta.', recovery: 'Decida se a pergunta quer quantos cabem ou o que sobra.' },
+        { label: 'Aceitar resposta improvável', cause: 'O resultado não é conferido pela multiplicação de volta.', recovery: 'Verifique se quociente × divisor volta ao total ou fica próximo dele.' }
+    ];
+    if (op === 'potenciacao') return [
+        { label: 'Fazer base × expoente', cause: 'Potência é confundida com multiplicação simples.', recovery: 'Repita a base o número de vezes do expoente.' },
+        { label: 'Contar repetições erradas', cause: 'O expoente não controla corretamente a quantidade de fatores.', recovery: 'Conte quantas vezes a base aparece antes de calcular.' }
+    ];
+    if (op === 'radiciacao') return [
+        { label: 'Responder com o radicando', cause: 'O número dentro da raiz é copiado como resposta.', recovery: 'Pergunte qual número gera esse valor.' },
+        { label: 'Tratar raiz como metade', cause: 'É usado um atalho inadequado.', recovery: 'Compare com quadrados ou cubos conhecidos.' }
+    ];
+    return [];
+}
+function buildQuestionCommonErrorsHtml(q) {
+    const items = buildQuestionCommonErrors(q);
+    if (!items.length) return '<div class="ils-visual-sub">Nenhum erro típico específico foi mapeado para esta questão.</div>';
+    return `<div class="activity-mini-list">${items.map((item) => `<div class="activity-mini-item"><strong>${escapeHtml(item.label)}</strong><span>Causa: ${escapeHtml(item.cause)}</span><span>Retomada: ${escapeHtml(item.recovery)}</span></div>`).join('')}</div>`;
+}
+function buildQuestionGradualExplanationHtml(q) {
+    const flow = getAdaptiveLearningFlowMeta(q);
+    const level1 = buildFacilitatedQuestionText(q);
+    const level2 = `${getPriority3StrategyText(q)}${flow.tier >= 2 ? ' • Use esta camada se a dica inicial não bastar.' : ''}`;
+    const level3 = `${getPriority3AlternativePathText(q) || buildQuestionStrategicHintText(q)}${flow.tier >= 3 ? ' • Esta é a rota mais completa para reorganizar o raciocínio.' : ''}`;
+    return `<div class="activity-step-grid"><div class="activity-step-card"><strong>Nível 1 — Entender</strong><span>${escapeHtml(level1)}</span></div><div class="activity-step-card"><strong>Nível 2 — Resolver</strong><span>${escapeHtml(level2)}</span></div><div class="activity-step-card"><strong>Nível 3 — Conferir</strong><span>${escapeHtml(level3)}</span></div></div><div class="ils-visual-sub">Camada sugerida agora: ${escapeHtml(flow.tierLabel)}.</div>`;
+}
+function buildQuestionTutorFlowHtml(q) {
+    const ctx = getQuestionPedagogicalContext(q);
+    const flow = getAdaptiveLearningFlowMeta(q);
+    const steps = [
+        `1. Nomeie a tarefa: ${buildQuestionKeyword(q).replace(/^Palavra-chave:\s*/i, '')}.`,
+        `2. Escolha a estratégia: ${getPriority3StrategyText(q)}`,
+        `3. Fluxo de ajuda: primeiro dica leve, depois explicação guiada e, se necessário, resolução comentada.`
+    ];
+    const stageInsight = getCurrentQuestionStageDiagnostic(q);
+    if (stageInsight?.domain?.stateLabel) {
+        steps.push(`${steps.length + 1}. Estado desta habilidade: ${stageInsight.domain.stateLabel}. ${stageInsight.domain.studentSignal}`);
+    }
+    if (stageInsight && stageInsight.count >= 2 && stageInsight.focus && String(stageInsight.label || '').trim()) {
+        steps.push(`${steps.length + 1}. Atenção ao erro que mais se repete aqui: ${stageInsight.label}. ${stageInsight.focus.studentMove}`);
+    }
+    if (ctx.isEstimation) steps.push(`${steps.length + 1}. Elimine alternativas muito pequenas ou muito grandes antes do cálculo detalhado.`);
+    if (ctx.isRemainder) steps.push(`${steps.length + 1}. Separe quociente e resto: grupos completos não são o mesmo que sobra.`);
+    steps.push(`${steps.length + 1}. Camada recomendada neste momento: ${flow.tierLabel}.`);
+    return `<ol class="activity-flow-list">${steps.map((step) => `<li>${escapeHtml(step)}</li>`).join('')}</ol>`;
+}
+function buildQuestionAccessibilityNote(q) {
+    const flow = getAdaptiveLearningFlowMeta(q);
+    const domain = q?.skillDomain || getCurrentQuestionStageDiagnostic(q)?.domain || null;
+    const supports = [
+        'Leitura facilitada em texto simples',
+        'Pista visual para representar a operação',
+        'Resposta alternativa por digitação'
+    ];
+    if (flow.tier >= 2) supports.push('Explicação guiada recomendada para esta tentativa');
+    if (flow.tier >= 3) supports.push('Passo a passo completo disponível nesta questão');
+    if (domain?.due) supports.push('Revisão curta priorizada nesta habilidade');
+    if (gameState.isVoiceReadActive) supports.push('Leitura em voz ativada nesta sessão');
+    else supports.push('Você pode ativar a leitura em voz no botão de acessibilidade');
+    if (gameState.isExtraTime) supports.push('Tempo estendido ativado');
+    return `Apoios disponíveis: ${supports.join(' • ')}.`;
+}
+function buildQuestionLearningMission(q) {
+    const stage = getPriority3StageLabel(q) || 'Etapa atual';
+    const opLabel = formatOperationLabel(getQuestionSemanticOperation(q) || q?.operacao || gameState.currentOperation || '');
+    return `Missão pedagógica: entender ${opLabel.toLowerCase()} em “${stage}” sem depender só de tentativa e erro.`;
+}
+
 function buildAuditStepCards(...items) {
     return `<div class="ils-place-grid">${items.filter(Boolean).map(([title, value]) => `<div class="ils-place-card"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(value)}</span></div>`).join('')}</div>`;
 }
@@ -14378,6 +16204,13 @@ function containsWholeNumberText(text, value) {
     return new RegExp(`(^|[^0-9])${escaped}([^0-9]|$)`).test(safe);
 }
 function parseQuestionExpectedAnswer(q) {
+    if (q?.learningContract && Number.isFinite(Number(q.learningContract.answer))) {
+        return {
+            resolved: true,
+            answer: Number(q.learningContract.answer),
+            reason: `contract:${String(q.learningContract.answerPolicy || 'exact')}`
+        };
+    }
     const raw = String(q?.question || '').replace(/\s*=\s*\?\s*$/, '').trim();
     if (!raw) return { resolved: false, answer: null, reason: 'empty-question' };
     const txt = raw.replace(/−/g, '-').replace(/×/g, 'x').replace(/\s+/g, ' ').trim();
@@ -14405,6 +16238,10 @@ function parseQuestionExpectedAnswer(q) {
     if (m) return { resolved: true, answer: Number(m[1]) + Number(m[2]) + Number(m[3]), reason: 'add-three' };
     m = txt.match(/^(\d+)\s*\+\s*(\d+)\s*\+\s*(\d+)\s*\+\s*(\d+)$/);
     if (m) return { resolved: true, answer: Number(m[1]) + Number(m[2]) + Number(m[3]) + Number(m[4]), reason: 'add-four' };
+    m = txt.match(/^Arredonde (\d+) para (\d+) e (\d+) para (\d+)\. Depois estime: \1 \+ \3$/i);
+    if (m) return { resolved: true, answer: Number(m[2]) + Number(m[4]), reason: 'add-estimate-rounded-addends' };
+    m = txt.match(/^(\d+) \+ (\d+) fica mais perto de qual estimativa$/i);
+    if (m) return { resolved: true, answer: Math.round((Number(m[1]) + Number(m[2])) / 10) * 10, reason: 'add-estimate-nearest-sum' };
     m = txt.match(/^(\d+)\s*\+\s*(\d+)$/);
     if (m) return { resolved: true, answer: Number(m[1]) + Number(m[2]), reason: 'add-simple' };
     m = txt.match(/^(\d+)\s*-\s*(\d+)$/);
@@ -14441,8 +16278,18 @@ function parseQuestionExpectedAnswer(q) {
     if (m) return { resolved: true, answer: Number(m[1]) / Number(m[2]), reason: 'div-context-groups' };
     m = txt.match(/^Em (\d+) ÷ (\d+), quantos grupos completos cabem antes de sobrar$/i);
     if (m) return { resolved: true, answer: Math.floor(Number(m[1]) / Number(m[2])), reason: 'div-complete-groups' };
+    m = txt.match(/^Sem calcular exatamente, (\d+) ÷ (\d+) fica mais perto de qual quociente$/i);
+    if (m) return { resolved: true, answer: Math.round(Number(m[1]) / Number(m[2])), reason: 'div-estimate-nearest' };
     m = txt.match(/^(\d+) ÷ (\d+)\. Qual é o resto$/i);
     if (m) return { resolved: true, answer: Number(m[1]) % Number(m[2]), reason: 'div-remainder-text' };
+    m = txt.match(/^Uma potência aparece como (\d+)(²|³) em uma expressão\. Qual é o valor dessa potência$/i);
+    if (m) return { resolved: true, answer: Number(m[1]) ** ({'²':2,'³':3}[m[2]] || 2), reason: 'power-context-short' };
+    m = txt.match(/^(\d+)(²|³) não significa (\d+) x (\d+)\. Quanto vale \1\2$/i);
+    if (m) return { resolved: true, answer: Number(m[1]) ** ({'²':2,'³':3}[m[2]] || 2), reason: 'power-error-short' };
+    m = txt.match(/^(\d+) x (\d+) é o dobro de (\d+) x \2\. Quanto vale \1 x \2$/i);
+    if (m) return { resolved: true, answer: Number(m[1]) * Number(m[2]), reason: 'mult-doubling' };
+    m = txt.match(/^√(\d+) está entre (\d+) e (\d+)\. Qual é a raiz inteira mais próxima por baixo$/i);
+    if (m) return { resolved: true, answer: Math.floor(Math.sqrt(Number(m[1]))), reason: 'root-floor-between-question' };
     m = txt.match(/^Para somar (\d+) \+ (\d+), primeiro faça \1 \+ (\d+)\. Depois some quanto$/i);
     if (m) return { resolved: true, answer: Number(m[2]) - Number(m[3]), reason: 'add-decomposition-remaining' };
     m = txt.match(/^Para calcular (\d+) - (\d+), primeiro faça \1 - (\d+)\. Depois tire quanto$/i);
@@ -14473,7 +16320,7 @@ function buildStrictSupportOverrides(q) {
                 : 'A mesma quantidade se repete várias vezes. Conte quantos grupos aparecem e quanto há em cada grupo.';
         }
         if (op === 'addition' && ctx.isMissingTerm) return 'Uma parcela já apareceu e a outra está escondida. Use o total para descobrir a parte que falta.';
-        if (op === 'addition' && ctx.isEstimation) return 'A questão não pede conta exata. Primeiro aproxime os números e depois escolha o valor mais próximo.';
+        if (op === 'addition' && ctx.isEstimation) return 'A questão pede estimativa por arredondamento das parcelas. Primeiro aproxime cada número e só depois estime a soma.';
         if (op === 'addition' && ctx.isContext) return 'Descubra quais quantidades aumentam ou se juntam. Só depois monte a soma.';
         if (op === 'subtraction' && ctx.isComparison) return 'A pergunta quer a diferença entre dois valores. Compare o maior com o menor, sem juntar as quantidades.';
         if (op === 'subtraction' && ctx.isMissingTerm) return 'A conta está incompleta. Pense no número que precisa ser tirado ou completado para a igualdade ficar correta.';
@@ -14640,7 +16487,7 @@ function setInclusiveLearningExpanded(expanded) {
         body.setAttribute('aria-hidden', !isExpanded ? 'true' : 'false');
     }
     if (!isExpanded) {
-        ['reading', 'visual', 'hint'].forEach((section) => setInclusiveLearningSectionExpanded(panel, section, false));
+        ['reading', 'visual', 'hint', 'errors', 'gradual', 'tutor'].forEach((section) => setInclusiveLearningSectionExpanded(panel, section, false));
     }
 }
 function setInclusiveLearningSectionExpanded(panel, section, expanded) {
@@ -14681,7 +16528,9 @@ function ensureInclusiveLearningPanel() {
         <div class="inclusive-learning-head">
           <span class="inclusive-learning-badge" id="inclusive-route-badge">Leitura e representação da questão</span>
           <span class="inclusive-learning-keyword" id="inclusive-keyword-badge">Palavra-chave</span>
+          <span class="inclusive-learning-badge" id="inclusive-mission-badge">Missão pedagógica</span>
         </div>
+        <p class="inclusive-support-note" id="inclusive-access-note"></p>
         <div class="inclusive-learning-sections">
           <div class="inclusive-learning-section" data-section="reading">
             <button type="button" class="inclusive-section-toggle" data-inclusive-toggle="reading" aria-expanded="false">Leitura facilitada</button>
@@ -14699,6 +16548,24 @@ function ensureInclusiveLearningPanel() {
             <button type="button" class="inclusive-section-toggle" data-inclusive-toggle="hint" aria-expanded="false">Dica estratégica</button>
             <div class="inclusive-section-body hidden" data-inclusive-body="hint" hidden aria-hidden="true">
               <p id="inclusive-strategic-hint"></p>
+            </div>
+          </div>
+          <div class="inclusive-learning-section" data-section="errors">
+            <button type="button" class="inclusive-section-toggle" data-inclusive-toggle="errors" aria-expanded="false">Erros comuns e causas</button>
+            <div class="inclusive-section-body hidden" data-inclusive-body="errors" hidden aria-hidden="true">
+              <div id="inclusive-errors-html"></div>
+            </div>
+          </div>
+          <div class="inclusive-learning-section" data-section="gradual">
+            <button type="button" class="inclusive-section-toggle" data-inclusive-toggle="gradual" aria-expanded="false">Explicação gradual (níveis 1, 2 e 3)</button>
+            <div class="inclusive-section-body hidden" data-inclusive-body="gradual" hidden aria-hidden="true">
+              <div id="inclusive-gradual-html"></div>
+            </div>
+          </div>
+          <div class="inclusive-learning-section" data-section="tutor">
+            <button type="button" class="inclusive-section-toggle" data-inclusive-toggle="tutor" aria-expanded="false">Tutor orientado por contexto</button>
+            <div class="inclusive-section-body hidden" data-inclusive-body="tutor" hidden aria-hidden="true">
+              <div id="inclusive-tutor-html"></div>
             </div>
           </div>
         </div>
@@ -14737,21 +16604,31 @@ function renderInclusiveLearningPanel(q) {
     }
     const routeEl = panel.querySelector('#inclusive-route-badge');
     const keywordEl = panel.querySelector('#inclusive-keyword-badge');
+    const missionEl = panel.querySelector('#inclusive-mission-badge');
+    const accessEl = panel.querySelector('#inclusive-access-note');
     const readingEl = panel.querySelector('#inclusive-reading-text');
     const visualEl = panel.querySelector('#inclusive-visual-html');
     const hintEl = panel.querySelector('#inclusive-strategic-hint');
+    const errorsEl = panel.querySelector('#inclusive-errors-html');
+    const gradualEl = panel.querySelector('#inclusive-gradual-html');
+    const tutorEl = panel.querySelector('#inclusive-tutor-html');
     if (routeEl) routeEl.textContent = getSupportRouteBadge(q);
     if (keywordEl) keywordEl.textContent = buildQuestionKeyword(q);
+    if (missionEl) missionEl.textContent = buildQuestionLearningMission(q);
+    if (accessEl) accessEl.textContent = buildQuestionAccessibilityNote(q);
     if (readingEl) readingEl.textContent = buildFacilitatedQuestionText(q);
     if (visualEl) {
         const html = buildQuestionVisualSupportHtml(q);
         visualEl.innerHTML = html || '<div class="ils-visual-sub">Nomeie o que a questão pede, destaque a relação entre os números e só depois calcule.</div>';
     }
     if (hintEl) hintEl.textContent = buildQuestionStrategicHintText(q);
+    if (errorsEl) errorsEl.innerHTML = buildQuestionCommonErrorsHtml(q);
+    if (gradualEl) gradualEl.innerHTML = buildQuestionGradualExplanationHtml(q);
+    if (tutorEl) tutorEl.innerHTML = buildQuestionTutorFlowHtml(q);
     panel.classList.remove('hidden');
     panel.hidden = false;
     setInclusiveLearningExpanded(false);
-    ['reading', 'visual', 'hint'].forEach((section) => setInclusiveLearningSectionExpanded(panel, section, false));
+    ['reading', 'visual', 'hint', 'errors', 'gradual', 'tutor'].forEach((section) => setInclusiveLearningSectionExpanded(panel, section, false));
 }
 function ensureAlternativeResponsePanel() {
     let panel = document.getElementById('alternative-response-panel');
@@ -15023,7 +16900,13 @@ function recordOperationTrailQuestionResolution(question, wasCorrectFinal) {
     }
     trail.currentStageAsked = Math.max(0, Number(trail.currentStageAsked) || 0) + 1;
     if (wasCorrectFinal) trail.currentStageCorrect = Math.max(0, Number(trail.currentStageCorrect) || 0) + 1;
+    if (question.isSupportLane && Number(trail.supportLaneRemaining || 0) > 0) {
+        if (wasCorrectFinal) trail.supportLaneRemaining = Math.max(0, Number(trail.supportLaneRemaining || 0) - 1);
+        else trail.supportLaneRemaining = Math.max(Number(trail.supportLaneRemaining || 0), getAdaptiveLaneSizeForMode(trail.supportMode || 'guided'));
+    }
     trail.lastQuestionWasReview = false;
+    maybeAdjustAdaptiveSupportAfterResolution();
+    try { updatePetDailyMissionProgressFromQuestion(question, !!wasCorrectFinal); } catch (_) {}
 }
 function handleAnswer(selectedAnswer, selectedButton) {
     // ✅ Modo Estudo: ao responder novamente, esconde a dica anterior
@@ -15155,6 +17038,7 @@ function handleAnswer(selectedAnswer, selectedButton) {
     } catch (_) {}
     gameState.attemptsThisQuestion++;
     gameState.questionAttemptStartedAt = Date.now();
+    try { renderInclusiveLearningPanel(q); } catch (_) {}
     // Salva erro (mesmo que depois acerte, isso ajuda a mapear as dificuldades)
     gameState.erros++;
     atualizarXP(-2);
@@ -15224,7 +17108,7 @@ function endGame() {
     if (gameState.erros > gameState.acertos / 2) {
          studySuggestion.textContent = `Você teve muitos erros! Recomendamos usar o Modo Estudo para treinar a ${gameState.currentOperation} (Nível ${gameState.currentLevel.toUpperCase()}).`;
     } else if (gameState.score > 1000 && gameState.currentLevel === 'advanced') {
-         studySuggestion.textContent = `Fantástico! Você está dominando a ${gameState.currentOperation} no Nível Avançado! Tente outro desafio.`;
+         studySuggestion.textContent = `Fantástico! Você está dominando a ${gameState.currentOperation} no nível ${petLevelLabel('advanced', { isRapidMode: false })}! Tente outro desafio.`;
     } else {
          studySuggestion.textContent = 'Continue praticando para alcançar o próximo nível de mestre!';
     }
@@ -15293,19 +17177,26 @@ function endGame() {
                         trail.supportHint = '';
                         trail.supportEscalations = 0;
                     }
+                    const reqMeta = getMasteryStageRequirementMeta(trail);
+                    const ruleText = reqMeta
+                        ? `Regra para avançar: ${reqMeta.requiredCorrect}/${reqMeta.targetQuestions} acertos (${reqMeta.targetAccuracyPct}%).`
+                        : `Regra para avançar: ${need}% de domínio.`;
                     if (passed && currentStage >= Math.max(0, Number(trail.totalStages || 1) - 1)) {
-                        sugg.textContent = `Etapa ${currentStage + 1}/${trail.totalStages} — ${stageName}. Aproveitamento ${correct}/${asked} (${Math.round(acc * 100)}%). A etapa final foi dominada e a prova de consolidação foi liberada nesta sessão.`;
+                        sugg.textContent = `Etapa ${currentStage + 1}/${trail.totalStages} — ${stageName}. Aproveitamento ${correct}/${asked} (${Math.round(acc * 100)}%). ${ruleText} A etapa final foi dominada e a prova de consolidação foi liberada nesta sessão.`;
                     } else if (passed && nextStage > currentStage) {
-                        sugg.textContent = `Etapa ${currentStage + 1}/${trail.totalStages} — ${stageName}. Aproveitamento ${correct}/${asked} (${Math.round(acc * 100)}%). Etapa dominada: a próxima sessão libera a etapa ${nextStage + 1}.`;
+                        sugg.textContent = `Etapa ${currentStage + 1}/${trail.totalStages} — ${stageName}. Aproveitamento ${correct}/${asked} (${Math.round(acc * 100)}%). ${ruleText} Etapa dominada: a próxima sessão libera a etapa ${nextStage + 1}.`;
                     } else if (passed) {
-                        sugg.textContent = `Etapa ${currentStage + 1}/${trail.totalStages} — ${stageName}. Aproveitamento ${correct}/${asked} (${Math.round(acc * 100)}%). Você dominou a etapa atual e já está no topo desta trilha.`;
+                        sugg.textContent = `Etapa ${currentStage + 1}/${trail.totalStages} — ${stageName}. Aproveitamento ${correct}/${asked} (${Math.round(acc * 100)}%). ${ruleText} Você dominou a etapa atual e já está no topo desta trilha.`;
                     } else {
                         const retakeRecommendation = getAutomaticRetakeRecommendation(gameState.currentOperation, gameState.currentLevel, trail);
                         const supportTxt = normalizeAdaptiveSupportMode(trail.supportMode || 'normal') !== 'normal'
                             ? ` Apoio atual: ${getAdaptiveSupportLabel(trail.supportMode)}.`
                             : '';
                         trail.lastStageResult.retakeRecommendation = retakeRecommendation;
-                        sugg.textContent = `Etapa ${currentStage + 1}/${trail.totalStages} — ${stageName}. Aproveitamento ${correct}/${asked} (${Math.round(acc * 100)}%). Ainda não liberou a próxima etapa: precisa de pelo menos ${need}% de domínio.${supportTxt}${retakeRecommendation ? ` ${retakeRecommendation}` : ''}`;
+                        const remainingText = reqMeta
+                            ? ` Agora: ${reqMeta.correct} acertos em ${reqMeta.asked}/${reqMeta.targetQuestions}. Faltam ${reqMeta.remainingCorrect} acerto${reqMeta.remainingCorrect === 1 ? '' : 's'} para liberar.`
+                            : '';
+                        sugg.textContent = `Etapa ${currentStage + 1}/${trail.totalStages} — ${stageName}. Aproveitamento ${correct}/${asked} (${Math.round(acc * 100)}%). ${ruleText}${remainingText}${supportTxt}${retakeRecommendation ? ` ${retakeRecommendation}` : ''}`;
                     }
                 }
             } else if (trail && trail.bankSize) {
@@ -15383,6 +17274,20 @@ function endGame() {
             setSavedTrailIndexForKey(gameState.multiplication.trailRangeKey, Math.max(0, Number(gameState.multiplication.trailPairIndex) || 0));
         }
     } catch (_) {}
+    try {
+        if (gameState.isRapidMode && gameState.currentOperation === 'multiplication') {
+            const totalAnsweredRapid = Math.max(0, Number(gameState.acertos || 0) + Number(gameState.erros || 0));
+            const totalQuestionsRapid = Math.max(0, Number(gameState.totalQuestions || 0));
+            const accuracyRapid = totalAnsweredRapid > 0 ? ((Number(gameState.acertos || 0) / totalAnsweredRapid) * 100) : 0;
+            gameState.__rapidMultiplicationTrailResult = recordRapidMultiplicationTrailResult(gameState.currentLevel, {
+                answered: totalAnsweredRapid,
+                totalQuestions: totalQuestionsRapid,
+                accuracy: accuracyRapid
+            });
+        } else {
+            gameState.__rapidMultiplicationTrailResult = null;
+        }
+    } catch (_) {}
     // Prioridade 3: atualiza sequência + conquistas ao concluir sessão
     try {
         const attemptsTotal3 = Math.max(1, Number(gameState.acertos || 0) + Number(gameState.erros || 0));
@@ -15424,9 +17329,19 @@ function endGame() {
         }
     } catch (_) {}
     try { recordPetCompletedSession({ sessionType: 'sessao', upd: gameState.__petProgressUpdate, bonusApplied: Number(gameState.__petBonusXpApplied || 0) }); } catch (_) {}
+    try { updateResultProgressActions(); } catch (_) {}
     exibirTela('result-screen');
+    try { updateResultProgressActions(); } catch (_) {}
     // Prioridade 3+: mostra recompensas/conquistas desta sessão na tela de resultado
-    try { setTimeout(() => { renderPetSessionRewardsOnResultScreen(); }, 80); } catch (_) {}
+    try { setTimeout(() => { renderPetSessionRewardsOnResultScreen(); maybeToastPetPersonalBest(); }, 80); } catch (_) {}
+}
+function maybeToastPetPersonalBest() {
+    try {
+        const pb = gameState.__petProgressUpdate && gameState.__petProgressUpdate.personalBest;
+        if (!pb || !pb.updated || gameState.__petPersonalBestToastShown) return;
+        gameState.__petPersonalBestToastShown = true;
+        PET_LEVEL1_UI.showToast(`🏁 Novo recorde pessoal em ${pb.label}: ${Number(pb.best?.accuracy || 0)}%`, { type: 'success', timeout: 3000 });
+    } catch (_) {}
 }
 // --- LÓGICA DO TEMPORIZADOR ---
 function startTimer() {
@@ -15556,6 +17471,7 @@ function attachEventListeners() {
         button.addEventListener('click', () => {
             // Guarda a operação para ser usada quando o nível for selecionado
             gameState.currentOperation = button.getAttribute('data-operation');
+            try { updatePetHomePrefs({ operation: gameState.currentOperation }); } catch (_) {}
             
             // MUDANÇA: Vai para a tela de seleção de nível
             exibirTela('level-selection-screen');
@@ -15572,7 +17488,8 @@ speak(`Operação ${gameState.currentOperation} selecionada. Agora escolha o ní
     levelButtons.forEach(button => {
         button.addEventListener('click', () => {
             const requestedLevel = button.getAttribute('data-level');
-            if (requestedLevel === 'apprentice' && !getOperationLevelOrder(gameState.currentOperation).includes('apprentice')) return;
+            try { updatePetHomePrefs({ level: requestedLevel }); } catch (_) {}
+            if (requestedLevel === 'apprentice' && !getOperationLevelOrder(gameState.currentOperation, { isRapidMode: !!gameState.isRapidMode }).includes('apprentice')) return;
             const resolved = resolveRequestedPedagogicalLevel(gameState.currentOperation, requestedLevel);
             if (resolved.blocked) {
                 showFeedbackMessage(resolved.state?.recommendation || resolved.state?.detail || 'Este nível ainda está bloqueado pedagogicamente.', 'warning', 3600);
@@ -15628,6 +17545,33 @@ speak(`Operação ${gameState.currentOperation} selecionada. Agora escolha o ní
             exibirTela('home-screen');
         });
     }
+    const btnResultContinueLevel = document.getElementById('btn-result-continue-level');
+    if (btnResultContinueLevel) {
+        btnResultContinueLevel.addEventListener('click', () => {
+            const targetLevel = String(btnResultContinueLevel.dataset.targetLevel || gameState.currentLevel || '');
+            startRequestedResultLevel(targetLevel);
+        });
+    }
+    const btnResultNextLevel = document.getElementById('btn-result-next-level');
+    if (btnResultNextLevel) {
+        btnResultNextLevel.addEventListener('click', () => {
+            const targetLevel = String(btnResultNextLevel.dataset.targetLevel || '');
+            if (!targetLevel) return;
+            startRequestedResultLevel(targetLevel);
+        });
+    }
+    const btnResultSaveProgress = document.getElementById('btn-result-save-progress');
+    if (btnResultSaveProgress) {
+        btnResultSaveProgress.addEventListener('click', async () => {
+            btnResultSaveProgress.disabled = true;
+            try {
+                await saveRoundProgressIntoCurrentProfile();
+            } finally {
+                btnResultSaveProgress.disabled = false;
+                try { updateResultSaveProgressButton(); } catch (_) {}
+            }
+        });
+    }
     // 4. Opções de Resposta
     answerOptions.forEach(button => {
         button.addEventListener('click', (e) => {
@@ -15667,18 +17611,24 @@ ensureTouchClick(document.getElementById('toggle-dyslexia'));
 ensureTouchClick(document.getElementById('toggle-calm'));
 ensureTouchClick(document.getElementById('toggle-extra-time'));
 ensureTouchClick(document.getElementById('toggle-vibrate'));
+updateModeAwareLevelCardCopy();
 // 5. Toggle Modo Rápido/Estudo
     modeRapidoBtn.addEventListener('click', () => {
         gameState.isRapidMode = true;
+        try { updatePetHomePrefs({ mode: 'rapid' }); } catch (_) {}
         modeRapidoBtn.classList.add('active');
         modeEstudoBtn.classList.remove('active');
         showFeedbackMessage("Modo Rápido (com tempo) selecionado!", 'incentive', 2500);
+        updateModeAwareLevelCardCopy();
+        try { if (gameState.currentOperation) updateLevelButtonsForOperation(gameState.currentOperation); } catch (_) {}
     });
     modeEstudoBtn.addEventListener('click', () => {
         gameState.isRapidMode = false;
         modeEstudoBtn.classList.add('active');
         modeRapidoBtn.classList.remove('active');
         showFeedbackMessage("Modo Estudo (Infinito, Sem Tempo) selecionado! Use os apoios pedagógicos quando precisar.", 'incentive', 2500);
+        updateModeAwareLevelCardCopy();
+        try { if (gameState.currentOperation) updateLevelButtonsForOperation(gameState.currentOperation); } catch (_) {}
     });
     // 6. Toggle Leitura de Voz
     if (toggleVoiceRead) {
@@ -15908,7 +17858,8 @@ function canShowRapidHintNow() {
     const last = Number(gameState.mentor.lastRapidHintQuestion ?? -999);
     const now = Number(gameState.questionNumber || 0);
     // "1 dica a cada 3 questões": precisa ter distância >= 3
-    return (now - last) >= 3;
+    if ((now - last) >= 3) return true;
+    return getPetRapidHintCredits() > 0;
 }
 function tryShowMentorTip() {
     const q = gameState.currentQuestion;
@@ -15930,6 +17881,12 @@ function tryShowMentorTip() {
         }
         // Ainda não usou a dica nesta questão: checa limite 1 a cada 3 questões
         if (!canShowRapidHintNow()) return; // não mostra nada
+        const regularRapidHint = ((Number(gameState.questionNumber || 0) - Number(gameState.mentor?.lastRapidHintQuestion ?? -999)) >= 3);
+        if (!regularRapidHint) {
+            const consumed = consumePetRapidHintCredit();
+            if (!consumed) return;
+            try { PET_LEVEL1_UI.showToast('💡 Dica rápida extra usada.', { type: 'info', timeout: 1800 }); } catch (_) {}
+        }
         const tip = getMentorTipsForQuestion(q)[0];
         showMentorBubble(tip);
         if (gameState.mentor) {
@@ -16925,6 +18882,22 @@ function buildQuestionOptions(operation, answer, ctx = {}) {
     } catch (_) {}
     return options;
 }
+function buildQuestionLearningContract(question) {
+    const raw = String(question?.question || '').replace(/\s*=\s*\?\s*$/, '').trim();
+    const op = String(question?.operacao || question?.semanticOperation || '').trim();
+    const stageLabel = String(question?.stageLabel || question?.masteryStageLabel || '').trim();
+    let answerPolicy = 'exact';
+    if (/mais próxima por baixo/i.test(raw) || /aproximada/i.test(raw)) answerPolicy = 'floor-estimate';
+    else if (/Sem calcular exatamente/i.test(raw) || /estimativa/i.test(stageLabel)) answerPolicy = 'estimate-nearest';
+    else if (/resto/i.test(raw)) answerPolicy = 'remainder';
+    return {
+        skillKey: `${op}::${normalizeTrailLabel(stageLabel) || 'geral'}`,
+        operation: op,
+        stageLabel,
+        answerPolicy,
+        answer: Number(question?.answer)
+    };
+}
 function buildQuestionPayload(operation, num1, num2, answer, questionString, questionSpeak, stageLabel) {
     const resolvedOperation = inferSemanticOperationFromQuestionText(questionString, operation) || operation;
     const options = buildQuestionOptions(resolvedOperation, answer, {
@@ -16951,14 +18924,26 @@ function buildQuestionPayload(operation, num1, num2, answer, questionString, que
         num2,
         stageLabel: stageLabel || ''
     };
+    question.learningContract = buildQuestionLearningContract(question);
     return decorateApprenticeQuestionVisuals(question, resolvedOperation, gameState.currentLevel || '');
 }
 function showPedagogicalFeedback(isCorrect, operation, q, selectedValue, opts = {}) {
     const isRapid = !!gameState.isRapidMode;
     const DURATION_RAPID = 15000;
     const resolvedOperation = getResolvedFeedbackOperation(operation, q);
+    const flow = getAdaptiveLearningFlowMeta(q, { attempts: Number(gameState.attemptsThisQuestion || 0) });
+    const stageInsight = getCurrentQuestionStageDiagnostic(q);
     if (isCorrect) {
-        showFeedbackControlled('✅ Correto! Boa! Continue.', 'success', 2500);
+        const challenge = String(stageInsight?.focus?.checkpoint || stageInsight?.focus?.studentMove || getPriority3AlternativePathText(q) || '').trim();
+        const domainTxt = String(stageInsight?.domain?.stateLabel || '').trim();
+        let successMsg = '✅ Correto!';
+        if (!isRapid) {
+            if (flow.attempts === 0 && flow.supportMode === 'normal') successMsg += ' Boa leitura da estratégia.';
+            else successMsg += ' Você reorganizou o raciocínio e conseguiu.';
+            if (domainTxt) successMsg += ` Domínio atual: ${domainTxt}.`;
+            if (challenge) successMsg += ` Próximo desafio: ${challenge}`;
+        }
+        showFeedbackControlled(successMsg.trim(), 'success', isRapid ? 2500 : 5200);
         return;
     }
     const diagnosis = getDistractorDiagnosis(q, selectedValue) || null;
@@ -16966,14 +18951,28 @@ function showPedagogicalFeedback(isCorrect, operation, q, selectedValue, opts = 
     const dimension = inferErrorDimension(q, diagnosis);
     const targeted = typicalError && typicalError !== 'Erro de cálculo ou atenção nesta habilidade.' ? typicalError : '';
     const hint = buildOperationSpecificPedagogicalHint(resolvedOperation, q, selectedValue, isRapid);
-    const correction = '';
+    const nextStep = (!isRapid && stageInsight && stageInsight.focus && String(stageInsight.focus.studentMove || '').trim())
+        ? ` Próximo passo: ${String(stageInsight.focus.studentMove || '').trim()}`
+        : '';
+    const strategy = String(getPriority3StrategyText(q) || '').trim();
+    const alternative = String(getPriority3AlternativePathText(q) || buildQuestionStrategicHintText(q) || '').trim();
     let msg = targeted
         ? `Erro de ${dimension.toLowerCase()}: ${targeted} ${hint}`.trim()
         : `${hint}`;
-    if (isRapid) {
-        showFeedbackControlled('💡 Dica rápida: ' + msg, 'incentive', DURATION_RAPID);
+    let prefix = '💡 Dica rápida: ';
+    if (!isRapid && flow.tier >= 2) {
+        prefix = '🧭 Explicação guiada: ';
+        msg = `${msg} Organize assim: ${strategy}`.trim();
+    }
+    if (!isRapid && flow.tier >= 3) {
+        prefix = '🧩 Explicação completa: ';
+        msg = `${msg} Organize assim: ${strategy}. Faça em etapas: ${alternative}`.trim();
+    }
+    msg = `${msg}${nextStep}`.trim();
+    if (isRapid || flow.tier === 1) {
+        showFeedbackControlled(prefix + msg, 'incentive', DURATION_RAPID);
     } else {
-        showFeedbackControlled('👩‍🏫 Passo a passo: ' + msg, 'incentive', 600000);
+        showFeedbackControlled(prefix + msg, 'incentive', 600000);
         window.__keepFeedbackUntilNextAnswer = true;
     }
 }
@@ -17034,7 +19033,7 @@ function updateOperationSkillReviewRecord(operation, level, stageIndex, stageLab
             bucket.independentAsked = Math.max(0, Number(bucket.independentAsked) || 0) + 1;
             if (wasCorrect) bucket.independentCorrect = Math.max(0, Number(bucket.independentCorrect) || 0) + 1;
         }
-        map[key] = {
+        const draftRecord = {
             operation,
             level,
             stageIndex: Math.max(0, Number(stageIndex) || 0),
@@ -17062,6 +19061,17 @@ function updateOperationSkillReviewRecord(operation, level, stageIndex, stageLab
             bridgeStats,
             lastBridgeAt: meta?.isBridgeQuestion ? now : Number(prev.lastBridgeAt || 0)
         };
+        const domain = getStageSkillDomainProfile(draftRecord);
+        draftRecord.domainState = String(domain.stateCode || 'building');
+        draftRecord.domainLabel = String(domain.stateLabel || 'Em construção');
+        draftRecord.masteryScore = Number(domain.masteryScore || 0);
+        draftRecord.reviewWindowDays = Number(domain.reviewWindowDays || 0);
+        draftRecord.nextReviewAt = Number(domain.nextReviewAt || 0);
+        draftRecord.reviewDue = !!domain.due;
+        draftRecord.recommendedSupport = String(domain.recommendedSupport || 'guided');
+        draftRecord.difficultyBand = String(domain.difficultyBand || 'core');
+        draftRecord.autonomyRatio = Number(domain.autonomy || 0);
+        map[key] = draftRecord;
         saveOperationSkillReviewMap(map);
     } catch (_) {}
 }
@@ -17166,7 +19176,13 @@ function recordOperationTrailQuestionResolution(question, wasCorrectFinal) {
     }
     trail.currentStageAsked = Math.max(0, Number(trail.currentStageAsked) || 0) + 1;
     if (wasCorrectFinal) trail.currentStageCorrect = Math.max(0, Number(trail.currentStageCorrect) || 0) + 1;
+    if (question.isSupportLane && Number(trail.supportLaneRemaining || 0) > 0) {
+        if (wasCorrectFinal) trail.supportLaneRemaining = Math.max(0, Number(trail.supportLaneRemaining || 0) - 1);
+        else trail.supportLaneRemaining = Math.max(Number(trail.supportLaneRemaining || 0), getAdaptiveLaneSizeForMode(trail.supportMode || 'guided'));
+    }
     trail.lastQuestionWasReview = false;
+    maybeAdjustAdaptiveSupportAfterResolution();
+    try { updatePetDailyMissionProgressFromQuestion(question, !!wasCorrectFinal); } catch (_) {}
 }
 function generateQuestionFromOperationTrail(operation) {
     const trail = gameState.operationTrail;
@@ -17192,6 +19208,7 @@ function generateQuestionFromOperationTrail(operation) {
         const supportMeta = {
             operation,
             level: trail.level,
+            stageIndex: isConsolidation ? sourceStageIndex : Math.max(0, Number(trail.currentStageIndex) || 0),
             stageLabel: q.masteryStageLabel || q.stageLabel || currentStageLabel || sourceStageLabel || '',
             supportMode,
             supportHint: String(trail.supportHint || ''),
@@ -17199,7 +19216,7 @@ function generateQuestionFromOperationTrail(operation) {
             supportLaneReason: String(trail.supportLaneReason || '')
         };
         if (!gameState.isRapidMode && Number(trail.supportLaneRemaining || 0) > 0) {
-            const supportQ = buildAdaptiveSupportQuestion(operation, supportMeta.stageLabel, supportMode);
+            const supportQ = buildAdaptiveSupportQuestion(operation, supportMeta.stageLabel, supportMode, supportMeta.stageIndex, supportMeta.level);
             if (supportQ && typeof supportQ === 'object') {
                 q = supportQ;
                 q.stageLabel = isReview ? `Revisão: ${sourceStageLabel || q.stageLabel || ''}` : (currentStageLabel || q.stageLabel || '');
@@ -17228,6 +19245,9 @@ function generateQuestionFromOperationTrail(operation) {
             level: trail.level,
             stageLabel: sourceStageLabel || currentStageLabel || q.stageLabel || ''
         });
+        const domainInsight = getDominantStageDiagnostic(operation, trail.level, q.masteryStageIndex, q.masteryStageLabel || q.stageLabel || '');
+        q.skillDomain = domainInsight?.domain || null;
+        q.learningContract = buildQuestionLearningContract(q);
         trail.stageType = learningType;
         return q;
     };
@@ -17269,7 +19289,14 @@ function generateQuestionFromOperationTrail(operation) {
         const asked = Math.max(0, Number(trail.currentStageAsked) || 0);
         let sourceStageIndex = currentStageIndex;
         let isReview = false;
-        if (currentStageIndex > 0 && !trail.lastQuestionWasReview && asked > 0 && asked < stageTarget && (asked % reviewEvery === 0)) {
+        const dueReviewIndex = currentStageIndex > 0 ? pickSmartReviewStageIndex(operation, trail.level, currentStageIndex) : 0;
+        const dueRecord = currentStageIndex > 0 ? getOperationSkillReviewRecord(operation, trail.level, dueReviewIndex) : null;
+        const dueDomain = getStageSkillDomainProfile(dueRecord);
+        const shouldForceDueReview = currentStageIndex > 0 && !trail.lastQuestionWasReview && !!dueDomain?.due && asked > 0;
+        if (shouldForceDueReview) {
+            sourceStageIndex = dueReviewIndex;
+            isReview = true;
+        } else if (currentStageIndex > 0 && !trail.lastQuestionWasReview && asked > 0 && asked < stageTarget && (asked % reviewEvery === 0)) {
             sourceStageIndex = pickSmartReviewStageIndex(operation, trail.level, currentStageIndex);
             if (!Number.isInteger(sourceStageIndex)) sourceStageIndex = Math.max(0, currentStageIndex - 1);
             isReview = true;

@@ -1,0 +1,28 @@
+Mudanças aplicadas com alteração mínima para aumentar engajamento, retenção e clareza de progresso sem mudar a cara do jogo:
+
+1. Home / botão Continuar
+- Se houver sessão salva: continua normalmente.
+- Se não houver sessão salva: o mesmo botão vira “Missão do dia” e inicia direto a missão sugerida.
+- Impacto: reduz fricção de entrada sem criar tela nova.
+
+2. Missão diária fortalecida
+- Recompensa aumentada de +15 XP / +1 dica para +30 XP / +2 dicas.
+- Agora registra sequência de missões concluídas e total acumulado.
+- Marcos de 3 e 7 dias dão 1 dica rápida extra e destravam conquista.
+- Impacto: dá motivo mais forte para voltar no dia seguinte.
+
+3. Recorde pessoal por modo/operação/nível
+- O app salva a melhor precisão do aluno por contexto.
+- Quando supera, exibe “Novo recorde pessoal” no resultado e concede 1 dica rápida extra.
+- Impacto: cria competição consigo mesmo, sem mudar a interface.
+
+4. Resultado mais útil
+- O bloco de recompensas da sessão agora pode mostrar:
+  - sequência de missões;
+  - novo recorde pessoal;
+  - dicas extras ganhas na sessão.
+- Impacto: progresso fica mais percebido.
+
+5. Progresso resumido da home
+- O chip de sequência agora inclui, no título, missões seguidas, missões concluídas e dicas rápidas extras.
+- Impacto: melhora clareza de evolução sem criar novos componentes visuais.

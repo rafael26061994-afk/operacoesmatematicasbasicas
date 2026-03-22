@@ -109,8 +109,8 @@
 
 <div class="modes-toggle">
                     Modo:
-                    <button class="mode-btn active" id="mode-rapido">Rápido</button>
-<button class="mode-btn" id="mode-estudo">Estudo</button>
+                    <button class="mode-btn" id="mode-rapido">Rápido</button>
+<button class="mode-btn active" id="mode-estudo">Estudo</button>
 </div>
 </div>
 <div class="accessibility-bar">
@@ -172,16 +172,16 @@
 <p>Somente para Multiplicação. Trilha com 10 etapas de compreensão inicial (50 questões no total), Modo Estudo como padrão e mais tempo no Modo Rápido.</p>
 </button>
 <button class="level-btn" data-level="easy">
-<h3>Fácil (👶)</h3>
-<p>Ideal para iniciantes. Números e tabuadas menores (Tempo Base: 15s).</p>
+<h3>Fácil</h3>
+<p>Nível inicial para construir compreensão com mais calma e apoio pedagógico.</p>
 </button>
 <button class="level-btn" data-level="medium">
-<h3>Médio (🧠)</h3>
-<p>Desafio moderado. Tabuadas médias, potências e raízes simples (Tempo Base: 30s).</p>
+<h3>Médio</h3>
+<p>Nível intermediário para ampliar repertório, estratégias e segurança nos cálculos.</p>
 </button>
 <button class="level-btn" data-level="advanced">
-<h3>Avançado (🚀)</h3>
-<p>Para mestres. Potências e raízes complexas, tabuadas e números altos (Tempo Base: 45s).</p>
+<h3>Avançado</h3>
+<p>Nível avançado para consolidar autonomia, precisão e desafios mais complexos.</p>
 </button>
 </div>
 <p style="text-align: center; margin-top: 20px; font-weight: 600; color: var(--cor-secundaria);">
@@ -235,6 +235,15 @@
 <h2 style="text-align: center;">Pontuação Final: <span id="final-score">0</span></h2>
 <p class="suggestion" id="study-suggestion"></p>
 <p class="result-performance-explanation" id="result-performance-explanation"></p>
+<div id="result-progression-card" class="result-progression-card hidden" aria-live="polite" aria-hidden="true">
+<div class="result-progression-head">
+<strong id="result-progression-title">Progressão do nível</strong>
+<span id="result-progression-badge" class="result-progression-badge">—</span>
+</div>
+<p id="result-progression-rule" class="result-progression-rule"></p>
+<p id="result-progression-status" class="result-progression-status"></p>
+<p id="result-progression-next" class="result-progression-next"></p>
+</div>
 <div class="result-details">
 <div class="result-item">
 <span class="stat-label">Acertos:</span>
@@ -250,8 +259,11 @@
 <p>XP Total: <span id="xp-total">0</span></p>
 </div>
 </div>
-<div class="footer-options">
-<button class="btn-primary btn-voltar-home" style="flex-grow: 1;">Novo Desafio</button>
+<div class="footer-options result-footer-options">
+<button class="btn-primary" id="btn-result-continue-level" type="button" style="display: none; flex-grow: 1;">Continuar neste nível</button>
+<button class="btn-primary" id="btn-result-next-level" type="button" style="display: none; flex-grow: 1;">Ir para o próximo nível</button>
+<button class="btn-secondary" id="btn-result-save-progress" type="button" style="flex-grow: 1;">Salvar progresso</button>
+<button class="btn-secondary btn-voltar-home" id="btn-result-home" type="button" style="flex-grow: 1;">Voltar à tela inicial</button>
 <button class="btn-secondary" id="btn-treinar-erros" style="display: none;">Treinar Erros</button>
 </div>
 </div>

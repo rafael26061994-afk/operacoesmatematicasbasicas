@@ -1,0 +1,45 @@
+/versao_otimizada/
+
+ATIVIDADE 2 (VERSÃO AJUSTADA)
+
+🔹 Trecho original:
+makeStage('Estimativa do quociente', 10, () => {
+  const divisor=randFrom([4,5,6,7,8,9]);
+  const quotient=randomInt(10,30);
+  return qDivision(divisor*quotient + randFrom([0, divisor-1]), divisor, 'Estimativa do quociente');
+}),
+
+🔹 Trecho ajustado:
+makeStage('Estimativa do quociente', 10, () => buildDivisionEstimateAuditQuestion('Estimativa do quociente')),
+
+🔹 Justificativa da alteração:
+- Foi trocado o gerador bruto por um gerador específico de estimativa.
+- Motivo: a atividade pedia estimativa, mas a estrutura anterior podia ser lida como divisão comum e gerar ambiguidade pedagógica.
+
+BLOCO PEDAGÓGICO:
+- Erros comuns + causas
+  - Confundir quociente estimado com quociente exato.
+  - Não usar múltiplos próximos do divisor.
+- Explicações (nível 1, 2 e 3)
+  - Nível 1: observar total e divisor.
+  - Nível 2: comparar com múltiplos próximos.
+  - Nível 3: escolher o quociente mais próximo e conferir plausibilidade.
+- Tutor inteligente (fluxo de ajuda)
+  - 1. Perguntar quantas vezes o divisor cabe aproximadamente.
+  - 2. Testar múltiplos vizinhos.
+  - 3. Eliminar alternativas muito pequenas ou muito grandes.
+
+BLOCO DE ACESSIBILIDADE:
+- Linguagem explícita de estimativa.
+- Apoio textual e visual preservado.
+- Resposta alternativa digitada mantida.
+
+BLOCO DE GAMIFICAÇÃO:
+- Mecânica aplicada + objetivo pedagógico
+  - Etapa passa a premiar raciocínio aproximativo coerente.
+  - Objetivo: desenvolver previsão matemática antes do cálculo exato.
+
+BLOCO PARA PROFESSOR:
+- Diagnóstico + intervenção recomendada
+  - Se o aluno trata estimativa como conta exata, retomar múltiplos próximos do divisor.
+  - Intervenção: sequência curta de comparação entre 3 múltiplos possíveis.

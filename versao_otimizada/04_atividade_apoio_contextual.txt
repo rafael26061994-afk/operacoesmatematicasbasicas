@@ -1,0 +1,47 @@
+/versao_otimizada/
+
+ATIVIDADE 4 (VERSÃO AJUSTADA)
+
+🔹 Trecho original:
+Painel de apoio com:
+- Leitura facilitada
+- Pista visual
+- Dica estratégica
+
+🔹 Trecho ajustado:
+Painel ampliado com adição mínima de:
+- Erros comuns e causas
+- Explicação gradual (níveis 1, 2 e 3)
+- Tutor orientado por contexto
+- Missão pedagógica da etapa
+- Nota de acessibilidade disponível
+
+🔹 Justificativa da alteração:
+- O painel já era funcional; foram adicionadas apenas camadas que faltavam para aprendizagem real.
+- Motivo: transformar apoio genérico em apoio mais diagnóstico, progressivo e acionável.
+
+BLOCO PEDAGÓGICO:
+- Erros comuns + causas
+  - Agora aparecem por tipo de atividade.
+- Explicações (nível 1, 2 e 3)
+  - Nível 1: entender o que a questão pede.
+  - Nível 2: resolver com a estratégia adequada.
+  - Nível 3: conferir por outro caminho.
+- Tutor inteligente (fluxo de ajuda)
+  - Sequência curta e contextual, sem substituir a atividade.
+
+BLOCO DE ACESSIBILIDADE:
+- Leitura facilitada preservada.
+- Pista visual preservada.
+- Indicação explícita de leitura em voz e resposta por digitação.
+- Tempo estendido reconhecido quando ativado.
+
+BLOCO DE GAMIFICAÇÃO:
+- Mecânica aplicada + objetivo pedagógico
+  - Cada questão passa a mostrar a missão pedagógica da etapa.
+  - Objetivo: engajar com significado, não só com acerto rápido.
+
+BLOCO PARA PROFESSOR:
+- Diagnóstico + intervenção recomendada
+  - O painel passa a apontar melhor o tipo de falha provável antes mesmo do erro consolidado.
+  - Intervenção: usar os blocos “erros comuns” e “tutor” como roteiro de mediação oral.

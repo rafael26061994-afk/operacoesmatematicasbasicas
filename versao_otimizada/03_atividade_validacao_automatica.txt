@@ -1,0 +1,45 @@
+/versao_otimizada/
+
+ATIVIDADE 3 (VERSÃO AJUSTADA)
+
+🔹 Trecho original:
+parseQuestionExpectedAnswer(...) com cobertura parcial de padrões textuais.
+
+🔹 Trecho ajustado:
+Trechos novos adicionados no parser:
+- divisão por estimativa (“Sem calcular exatamente...”)
+- potência em contexto curto
+- erro comum de potência
+- multiplicação por dobro
+- raiz inteira por baixo
+
+🔹 Justificativa da alteração:
+- Foi ampliada a validação automática apenas nos padrões que ainda estavam frágeis.
+- Motivo: impedir divergência entre texto, resposta, distratores e auditoria em tela.
+
+BLOCO PEDAGÓGICO:
+- Erros comuns + causas
+  - Enunciado correto com resposta validada por padrão incompleto.
+  - Questão pedagogicamente boa, mas tecnicamente sem cobertura de leitura.
+- Explicações (nível 1, 2 e 3)
+  - Nível 1: reconhecer a família da questão.
+  - Nível 2: aplicar a regra correta da família.
+  - Nível 3: revalidar a resposta antes da exibição.
+- Tutor inteligente (fluxo de ajuda)
+  - 1. Identificar a semântica da questão.
+  - 2. Calcular a resposta esperada.
+  - 3. Reconstruir opções quando necessário.
+
+BLOCO DE ACESSIBILIDADE:
+- Garante coerência entre leitura, apoio e alternativa correta.
+- Reduz risco de feedback inconsistente para estudantes com dificuldade.
+
+BLOCO DE GAMIFICAÇÃO:
+- Mecânica aplicada + objetivo pedagógico
+  - Menos erro estrutural silencioso.
+  - Mais justiça na progressão e no acerto.
+
+BLOCO PARA PROFESSOR:
+- Diagnóstico + intervenção recomendada
+  - Se houver padrão recorrente em uma família, o professor pode confiar melhor no dado gerado.
+  - Intervenção: usar o relatório de erro dominante com mais segurança.

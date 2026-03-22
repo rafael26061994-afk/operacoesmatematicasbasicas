@@ -1,0 +1,34 @@
+IMPLEMENTAÇÃO — IA ADAPTATIVA E PEDAGÓGICA COM ALTERAÇÃO MÍNIMA
+
+1) Onde foi aplicada no PET
+- script.js -> getAdaptiveLearningFlowMeta
+- script.js -> showPedagogicalFeedback
+- script.js -> buildQuestionGradualExplanationHtml
+- script.js -> buildQuestionTutorFlowHtml
+- script.js -> buildQuestionAccessibilityNote
+- script.js -> recordOperationTrailQuestionResolution
+- script.js -> maybeAdjustAdaptiveSupportAfterResolution
+- script.js -> handleAnswer
+
+2) Como era antes
+- havia apoio adaptativo e painel inclusivo, mas o nível de ajuda não era escalonado claramente por tentativa;
+- o ajuste automático de apoio existia, porém não era acionado ao fechar a questão;
+- a rota de apoio não reduzia de forma mais inteligente após acertos em apoio gradual;
+- o feedback era útil, mas não subia de camada de forma explícita entre dica leve, explicação guiada e explicação completa;
+- o acerto não devolvia um próximo desafio pedagógico curto.
+
+3) Como ficou depois
+- o sistema agora calcula uma camada de ajuda ativa por tentativa e por modo de apoio: dica rápida, explicação guiada ou explicação completa;
+- o feedback passa a escalar conforme insistência no erro;
+- o acerto passa a devolver reforço + próximo desafio curto;
+- a etapa resolvida agora dispara ajuste automático do apoio;
+- perguntas de rota gradual reduzem o contador de apoio ao acertar e mantêm recuperação ao errar;
+- o painel inclusivo passa a refletir a camada sugerida naquele momento;
+- tutor, explicação gradual e nota de acessibilidade ficam coerentes com o nível de ajuda atual.
+
+4) Por que isso melhora a aprendizagem
+- reduz repetição cega do mesmo erro;
+- torna o apoio mais proporcional à necessidade real do aluno;
+- aproxima o PET de uma IA educacional prática: diagnostica, adapta, explica e reorienta;
+- melhora a autonomia, porque o aluno recebe o próximo passo em vez de só “certo/errado”;
+- melhora a ação do professor indiretamente, porque o apoio passa a seguir o erro dominante e o histórico da etapa.

@@ -1,0 +1,27 @@
+Correção aplicada: estimativa de adição
+
+1. Local da mudança
+- script.js
+- função buildAdditionEstimateAuditQuestion
+- parser interno parseQuestionExpectedAnswer
+- apoio textual de estimativa em adição
+
+2. O que existia antes
+- Enunciado genérico: “Sem calcular exatamente, a + b fica mais perto de qual estimativa”
+- Gabarito calculado por arredondamento separado de cada parcela
+- Isso podia conflitar com a interpretação “dezena mais próxima da soma”
+
+3. O que foi alterado
+- O enunciado agora explicita o método do gabarito:
+  “Arredonde A para X e B para Y. Depois estime: A + B”
+- O parser passou a reconhecer esse formato explicitamente
+- O apoio textual de estimativa em adição passou a mencionar arredondamento das parcelas
+
+4. Tipo de mudança
+- correção de ambiguidade
+- melhoria de clareza
+
+5. Impacto real
+- elimina dupla interpretação da resposta esperada
+- mantém a lógica pedagógica já usada no PET
+- reduz risco de o aluno ser penalizado por um critério implícito diferente do enunciado

@@ -1,0 +1,23 @@
+/versao_otimizada/
+
+RESULTADO APLICADO NO MATERIAL
+
+- Corrigida a ambiguidade em radiciação estimada.
+- Corrigida a ambiguidade em divisão por estimativa.
+- Ampliada a validação automática dos enunciados ajustados.
+- Adicionados:
+  - erros comuns + causas
+  - explicações graduais
+  - tutor orientado por contexto
+  - nota de acessibilidade multimodal
+  - missão pedagógica por atividade
+
+ARQUIVOS ALTERADOS NO PROJETO
+- script.js
+- style.css
+- pasta /versao_otimizada/
+
+CRITÉRIO DE ALTERAÇÃO
+- Estrutura original preservada.
+- Somente pontos frágeis foram alterados.
+- Recursos já corretos foram mantidos.

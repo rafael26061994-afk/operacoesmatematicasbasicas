@@ -1,0 +1,11 @@
+Implementação mínima, sem alterar a cara do jogo.
+
+Mudanças aplicadas:
+1. Missão diária baseada em revisão vencida ou ponto mais frágil.
+2. Progresso da missão contado por questão, com recompensa de XP e 1 dica rápida extra.
+3. Créditos de dica rápida extra persistidos no progresso do perfil.
+4. Botão Continuar passa a mostrar operação e nível da sessão salva.
+5. CTA principal da home reaproveitado para mostrar a missão do dia.
+6. Preferências invisíveis salvas: último modo, operação e nível.
+7. Mentor no Modo Rápido pode usar dica extra via crédito, sem mudar interface.
+8. Marcos de sequência passam a conceder também 1 dica rápida extra.

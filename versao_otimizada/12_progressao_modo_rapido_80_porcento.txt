@@ -1,0 +1,15 @@
+Implementação aplicada (alteração mínima):
+
+- Modo Rápido da multiplicação agora usa progressão por nível:
+  - Guerreiro libera Capitão ao fechar o nível com pelo menos 80% de acertos.
+  - Capitão libera Mestre ao fechar o nível com pelo menos 80% de acertos.
+  - Mestre conclui a trilha da multiplicação ao fechar o nível com pelo menos 80% de acertos.
+
+Onde foi alterado:
+- script.js
+  - persistência do progresso rápido da multiplicação
+  - estados pedagógicos dos níveis no Modo Rápido
+  - meta de progressão na tela de resultado
+  - registro do resultado ao final da sessão
+
+Sem alteração visual estrutural.

@@ -1,0 +1,6 @@
+- alteração de perfil existente agora exige confirmação do PIN atual do próprio perfil
+- usuário precisa entrar no perfil correto antes de editar nome, turma, escola ou PIN
+- bloqueio reforçado para impedir troca de PIN de outro perfil no mesmo dispositivo
+- badge de progresso da trilha ficou mais explícito: mostra regra objetiva de avanço, acertos atuais e quantos faltam
+- card de liberação do próximo nível passou a explicar a regra objetiva do nível
+- resumo ao fim da sessão informa com números quantos acertos são necessários para liberar a próxima etapa

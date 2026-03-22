@@ -1,0 +1,11 @@
+- Bloqueio mais claro na edição de perfil: campos ficam desabilitados quando o perfil selecionado não é o perfil ativo autenticado.
+- Alteração de PIN continua exigindo entrada no perfil correto + confirmação do PIN atual.
+- Tela de resultado ganhou resumo objetivo da progressão do nível:
+  - regra de avanço
+  - situação da etapa/consolidação
+  - próximo passo
+- Botões novos na tela de resultado:
+  - Continuar neste nível / próxima etapa / consolidação
+  - Ir para o próximo nível (quando liberado)
+  - Voltar à tela inicial
+- Regra do nível ficou mais explícita: não depende da pontuação final, e sim do bloco de questões + consolidação.

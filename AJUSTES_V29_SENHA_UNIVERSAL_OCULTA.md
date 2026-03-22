@@ -1,0 +1,3 @@
+- troquei o `prompt()` da exclusão de perfil por um diálogo próprio com campo `type="password"`
+- a senha universal não aparece mais enquanto é digitada
+- a lógica de validação e manutenção do perfil quando a senha está errada foi mantida

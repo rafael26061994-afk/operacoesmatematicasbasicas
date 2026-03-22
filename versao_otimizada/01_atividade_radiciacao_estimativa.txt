@@ -1,0 +1,49 @@
+/versao_otimizada/
+
+ATIVIDADE 1 (VERSÃO AJUSTADA)
+
+🔹 Trecho original:
+function qRootEstimate(square, label) {
+    const root = Math.round(Math.sqrt(square));
+    return buildQuestionPayload('radiciacao', square, null, root, `√${square} (aproximada)`, `raiz quadrada aproximada de ${square}`, label);
+}
+
+🔹 Trecho ajustado:
+function qRootEstimate(square, label) {
+    const low = Math.floor(Math.sqrt(square));
+    const high = low + 1;
+    return buildQuestionPayload('radiciacao', square, 2, low, `√${square} está entre ${low} e ${high}. Qual é a raiz inteira mais próxima por baixo`, `a raiz de ${square} está entre ${low} e ${high}. Qual é a raiz inteira mais próxima por baixo`, label);
+}
+
+🔹 Justificativa da alteração:
+- Foi alterado o cálculo da estimativa de raiz para o piso matemático.
+- Foi alterado o enunciado para interpretação única: “raiz inteira mais próxima por baixo”.
+- Motivo: evitar conflito entre resposta esperada, leitura pedagógica e validação automática.
+
+BLOCO PEDAGÓGICO:
+- Erros comuns + causas
+  - Responder com o radicando: copia do número dentro da raiz.
+  - Escolher o inteiro mais próximo sem critério: falta de referência entre quadrados perfeitos.
+- Explicações (nível 1, 2 e 3)
+  - Nível 1: localizar entre quais quadrados perfeitos o número está.
+  - Nível 2: identificar o inteiro por baixo.
+  - Nível 3: conferir elevando o número ao quadrado.
+- Tutor inteligente (fluxo de ajuda)
+  - 1. Descobrir entre quais quadrados o número fica.
+  - 2. Escolher a raiz inteira por baixo.
+  - 3. Conferir se o quadrado ultrapassa ou não o radicando.
+
+BLOCO DE ACESSIBILIDADE:
+- Leitura facilitada do enunciado.
+- Pista visual com “quadrado menor / valor / quadrado maior”.
+- Leitura em voz e resposta digitada preservadas.
+
+BLOCO DE GAMIFICAÇÃO:
+- Mecânica aplicada + objetivo pedagógico
+  - Missão pedagógica explícita da etapa.
+  - Objetivo: acertar por comparação matemática, não por chute.
+
+BLOCO PARA PROFESSOR:
+- Diagnóstico + intervenção recomendada
+  - Se o aluno escolhe o radicando ou um vizinho sem critério, retomar quadrados perfeitos próximos.
+  - Intervenção: treino curto “entre dois quadrados” antes de voltar à questão.

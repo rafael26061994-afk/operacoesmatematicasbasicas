@@ -1,0 +1,27 @@
+AJUSTES MÍNIMOS PARA SUBIR A FORÇA DE HÁBITO SEM MUDAR A CARA DO JOGO
+
+1) HOME
+- Removido o texto detalhado da missão do dia com contadores (ex.: 0/4 e 0/5).
+- A mensagem da home passou a usar texto curto e direto.
+- Quando não há sessão salva, o botão Continuar vira "▶ Jogar agora".
+
+2) RETENÇÃO
+- A missão diária passou de +30 XP / +2 dicas para +40 XP / +3 dicas.
+- Os marcos de 3 e 7 dias de missão passaram de +1 para +2 dicas rápidas extras.
+- Recorde pessoal passou de +1 para +2 dicas rápidas extras.
+- Foram adicionados avisos de "quase lá" quando a missão está prestes a ser concluída.
+
+3) PROGRESSO PERCEBIDO
+- A tela de resultado agora também mostra:
+  - missão concluída na sessão;
+  - próximo nível do Modo Rápido ou trilha superada na multiplicação.
+
+4) RECOMPENSA
+- Bônus de sequência ajustados para 3 / 7 / 14 dias:
+  - 15 XP / 35 XP / 70 XP.
+
+PRINCÍPIO RESPEITADO
+- Sem redesign.
+- Sem mudança da identidade visual.
+- Sem remoção de funcionalidade existente.
+- Mudanças concentradas em comportamento invisível no script.js.

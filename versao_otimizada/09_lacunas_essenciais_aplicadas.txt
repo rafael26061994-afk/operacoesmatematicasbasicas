@@ -1,0 +1,184 @@
+IMPLEMENTAÇÃO DAS LACUNAS ESSENCIAIS — PET
+
+1) Nome da melhoria
+Modelo de domínio por habilidade
+
+Onde aplicar no PET
+script.js
+- getStageSkillDomainProfile
+- getDominantStageDiagnostic
+- updateOperationSkillReviewRecord
+
+Como está atualmente
+O PET reagia por etapa e por erro dominante, mas não registrava explicitamente o estado de domínio da habilidade.
+
+Ajuste aplicado
+- criação do cálculo de domínio por habilidade com:
+  - masteryScore
+  - stateCode/stateLabel
+  - autonomy
+  - supportReliance
+  - nextReviewAt
+  - reviewDue
+  - difficultyBand
+  - recommendedSupport
+- persistência desses campos no registro da habilidade.
+
+Tipo de mudança
+- adaptação inteligente
+- diagnóstico
+
+Por que essa mudança é necessária
+Sem domínio explícito, o PET sabia que o aluno errou, mas não sabia se a habilidade estava nova, frágil, em construção, consolidando ou dominada.
+
+Impacto esperado
+- aluno: apoio mais coerente com o estado real da habilidade
+- professor: leitura mais clara de autonomia, estabilidade e necessidade de revisão
+
+2) Nome da melhoria
+Revisão espaçada com prioridade para habilidade vencida
+
+Onde aplicar no PET
+script.js
+- pickSmartReviewStageIndex
+- generateQuestionFromOperationTrail
+- maybeAdjustAdaptiveSupportAfterResolution
+
+Como está atualmente
+O PET já fazia revisão entre etapas, mas sem priorizar explicitamente habilidades com revisão vencida.
+
+Ajuste aplicado
+- peso extra para habilidades com reviewDue=true
+- injeção de revisão prioritária antes da revisão periódica comum
+- recalibração automática de reviewEvery conforme estado da habilidade
+
+Tipo de mudança
+- adaptação inteligente
+- ajuste de fluxo
+
+Por que essa mudança é necessária
+Sem revisão vencida explícita, o PET reforçava o que estava fraco no momento, mas não mantinha com precisão o que já tinha sido aprendido.
+
+Impacto esperado
+- aluno: menos esquecimento silencioso
+- professor: mais retenção e menos falsa impressão de domínio estável
+
+3) Nome da melhoria
+Contrato explícito entre atividade, resposta e validação
+
+Onde aplicar no PET
+script.js
+- buildQuestionLearningContract
+- buildQuestionPayload
+- parseQuestionExpectedAnswer
+- generateQuestionFromOperationTrail
+
+Como está atualmente
+A coerência entre enunciado, resposta esperada e validação ainda dependia muito da leitura textual do parser.
+
+Ajuste aplicado
+- cada questão agora recebe learningContract com:
+  - skillKey
+  - operation
+  - stageLabel
+  - answerPolicy
+  - answer
+- o parser passa a respeitar primeiro o contrato explícito quando existir.
+
+Tipo de mudança
+- melhoria pedagógica
+- ajuste de fluxo
+- diagnóstico
+
+Por que essa mudança é necessária
+Reduz risco de novas ambiguidades entre gerador, texto e correção.
+
+Impacto esperado
+- aluno: menos chance de correção incoerente
+- professor: maior confiabilidade no comportamento interno do sistema
+
+4) Nome da melhoria
+Escalonamento da ajuda orientado por domínio real
+
+Onde aplicar no PET
+script.js
+- getAdaptiveLearningFlowMeta
+- maybeAdjustAdaptiveSupportAfterResolution
+- showPedagogicalFeedback
+- buildQuestionTutorFlowHtml
+- buildQuestionAccessibilityNote
+
+Como está atualmente
+A ajuda já escalonava por tentativa e por suporte, mas ainda não usava plenamente o estado de domínio da habilidade.
+
+Ajuste aplicado
+- flow meta agora considera:
+  - domainState
+  - dueReview
+  - recommendedSupport
+- feedback de acerto passou a mostrar estado de domínio
+- tutor contextual passou a mostrar estado da habilidade e sinal de ação do aluno
+- acessibilidade passou a informar quando a revisão curta foi priorizada
+
+Tipo de mudança
+- adaptação inteligente
+- melhoria pedagógica
+- acessibilidade
+
+Por que essa mudança é necessária
+Tentativa sozinha não é suficiente. Dois alunos podem estar na mesma tentativa, mas em estados pedagógicos diferentes.
+
+Impacto esperado
+- aluno: mediação mais precisa
+- professor: melhor coerência entre erro, ajuda e estágio de consolidação
+
+5) Nome da melhoria
+Diagnóstico docente com leitura de domínio e manutenção
+
+Onde aplicar no PET
+script.js
+- buildTeacherInterventionPlan
+
+Como está atualmente
+O professor já recebia semáforo, estabilidade, erro comum e prioridade automática.
+
+Ajuste aplicado
+- inclusão de:
+  - estado de domínio
+  - sinal pedagógico do domínio
+  - alerta de revisão vencida
+  - recomendação de agrupamento quando houver vários alunos no mesmo erro
+
+Tipo de mudança
+- diagnóstico
+- melhoria pedagógica
+
+Por que essa mudança é necessária
+O professor precisa saber não só o erro, mas se a habilidade está começando, caiu, consolidando ou vencida para revisão.
+
+Impacto esperado
+- aluno: intervenção mais rápida e adequada
+- professor: ação menos descritiva e mais operacional
+
+VERIFICAÇÃO FINAL
+
+O PET agora possui comportamento adaptativo real ou ainda é majoritariamente estático?
+
+Resposta objetiva:
+Agora ele possui comportamento adaptativo real em nível pedagógico local e de manutenção da habilidade, mas ainda não é totalmente adaptativo em nível curricular amplo.
+
+Justificativa objetiva:
+Agora o PET:
+- calcula estado de domínio por habilidade
+- usa revisão vencida para forçar retomada
+- recalibra frequência de revisão
+- ajusta suporte com base em fragilidade, consolidação ou domínio
+- conecta erro, ajuda, tutor e diagnóstico ao mesmo estado da habilidade
+
+Ainda não faz plenamente:
+- reordenamento global completo de currículo
+- replanejamento de toda a trilha com base em domínio longitudinal multihabilidade
+- aprendizagem automática por efetividade histórica das intervenções
+
+Conclusão crítica:
+O PET deixou de ser majoritariamente estático. Agora ele é um sistema adaptativo real por habilidade e por manutenção, embora ainda não seja uma IA curricular completa.
