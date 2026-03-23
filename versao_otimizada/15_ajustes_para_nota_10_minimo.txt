@@ -1,0 +1,34 @@
+Ajustes aplicados para empurrar o PET ao máximo possível sem mudar a cara do jogo.
+
+1. Bônus de retorno
+- Home reconhece quando o aluno ficou 2+ dias sem jogar.
+- CTA vira "Voltar com bônus".
+- Ao concluir uma sessão de retorno, ganha XP e dicas rápidas extras.
+- Badge: "Volta por cima".
+
+2. Sessão perfeita
+- Sessões com 100% de precisão e 10+ questões rendem bônus extra.
+- Ganha XP, dicas rápidas extras e badge próprio.
+
+3. Combo dentro da rodada
+- 3 acertos seguidos: +6 XP.
+- 5 acertos seguidos: +10 XP e +1 dica rápida.
+- Melhor combo da sessão aparece no resultado.
+
+4. Missão diária e sequência fortalecidas
+- Mantidos ajustes anteriores.
+- Missão 14 dias passa a desbloquear badge e bônus maior.
+
+5. Resultado mais forte
+- Tela de resultado agora pode mostrar:
+  - bônus de retorno
+  - sessão perfeita
+  - combo máximo
+  - missão concluída
+  - recorde pessoal
+  - próximo nível do modo rápido / trilha superada
+
+6. Recompensa invisível, sem mudar visual
+- Todas as mudanças ficaram em script.js.
+- Não houve redesign.
+- O loop ficou mais forte por comportamento, não por estética.

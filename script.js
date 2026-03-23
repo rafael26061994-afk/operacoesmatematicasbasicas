@@ -2017,6 +2017,37 @@ function petAddDaysToKey(key, deltaDays) {
         return petDateKeyLocal();
     }
 }
+function petDiffDaysBetweenKeys(fromKey, toKey) {
+    try {
+        const a = String(fromKey || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        const b = String(toKey || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (!a || !b) return 0;
+        const da = new Date(Number(a[1]), Number(a[2]) - 1, Number(a[3]));
+        const db = new Date(Number(b[1]), Number(b[2]) - 1, Number(b[3]));
+        return Math.round((db - da) / 86400000);
+    } catch (_) {
+        return 0;
+    }
+}
+function getPetComebackMeta(progress = null) {
+    try {
+        const p = (progress && typeof progress === 'object') ? progress : loadPetProgress();
+        const today = petDateKeyLocal();
+        const last = String(p.lastStudyDate || '');
+        const gap = last ? petDiffDaysBetweenKeys(last, today) : 0;
+        if (gap < 2) return { eligible: false, gapDays: 0, missedDays: 0, xp: 0, hints: 0 };
+        const missedDays = Math.max(1, gap - 1);
+        return {
+            eligible: String(p.lastComebackDate || '') !== today,
+            gapDays: gap,
+            missedDays,
+            xp: Math.min(45, 10 + (missedDays * 5)),
+            hints: missedDays >= 3 ? 2 : 1
+        };
+    } catch (_) {
+        return { eligible: false, gapDays: 0, missedDays: 0, xp: 0, hints: 0 };
+    }
+}
 function formatDateBR(key) {
     try {
         const m = String(key || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -2214,7 +2245,7 @@ function getPetDailyMissionHomeText(mission = null) {
         if (!m) return 'Faça uma rodada rápida e mantenha sua sequência.';
         if (Number(m.completedAt || 0) > 0) return 'Missão concluída. Volte amanhã para manter sua sequência.';
         if (m.due) return 'Hora da revisão rápida. Toque em Continuar e entre direto no treino sugerido.';
-        return 'Faça uma rodada curta, ganhe bônus e mantenha sua sequência.';
+        return 'Entre direto em uma rodada curta e ganhe bônus.';
     } catch (_) {
         return 'Faça uma rodada rápida e mantenha sua sequência.';
     }
@@ -2319,8 +2350,12 @@ function getPetBadgeCatalog() {
         { id: 'streak_14', title: '14 dias seguidos', desc: 'Manteve uma sequência de 14 dias.' },
         { id: 'mission_3', title: 'Missão 3 dias', desc: 'Concluiu a missão diária por 3 dias seguidos.' },
         { id: 'mission_7', title: 'Missão 7 dias', desc: 'Concluiu a missão diária por 7 dias seguidos.' },
+        { id: 'mission_14', title: 'Missão 14 dias', desc: 'Concluiu a missão diária por 14 dias seguidos.' },
         { id: 'accuracy_90', title: 'Precisão 90%', desc: 'Concluiu uma sessão com 90%+ de precisão (10+ questões).' },
         { id: 'rapid_90', title: 'Rápido 90%', desc: 'Concluiu no Modo Rápido com 90%+ de precisão (10+ questões).' },
+        { id: 'perfect_session', title: 'Sessão perfeita', desc: 'Fez 100% de precisão em uma sessão com 10+ questões.' },
+        { id: 'comeback_return', title: 'Volta por cima', desc: 'Voltou ao PET após alguns dias e concluiu uma sessão.' },
+        { id: 'combo_5', title: 'Combo 5', desc: 'Fez 5 acertos seguidos em uma sessão.' },
         { id: 'personal_best', title: 'Novo recorde pessoal', desc: 'Superou sua melhor precisão em um nível.' },
         { id: 'answered_100', title: '100 questões', desc: 'Respondeu 100 questões no total (somando sessões).' },
         { id: 'answered_500', title: '500 questões', desc: 'Respondeu 500 questões no total (somando sessões).' }
@@ -2346,6 +2381,7 @@ function loadPetProgress() {
         missionsCompleted: 0,
         missionStreak: 0,
         lastMissionDate: null,
+        lastComebackDate: null,
         badges: {},
         rapidHintCredits: 0,
         rapidMultiplicationTrail: normalizeRapidMultiplicationTrailProgress(),
@@ -2421,9 +2457,13 @@ function recordPetMissionCompletionReward() {
         const newlyUnlocked = [];
         if (p.missionStreak >= 3 && awardPetBadge(p, 'mission_3')) newlyUnlocked.push('mission_3');
         if (p.missionStreak >= 7 && awardPetBadge(p, 'mission_7')) newlyUnlocked.push('mission_7');
+        if (p.missionStreak >= 14 && awardPetBadge(p, 'mission_14')) newlyUnlocked.push('mission_14');
         let bonusHints = 0;
         if (p.missionStreak === 3 || p.missionStreak === 7) {
             bonusHints = 2;
+            p.rapidHintCredits = Math.max(0, Number(p.rapidHintCredits || 0)) + bonusHints;
+        } else if (p.missionStreak === 14) {
+            bonusHints = 3;
             p.rapidHintCredits = Math.max(0, Number(p.rapidHintCredits || 0)) + bonusHints;
         }
         savePetProgress(p);
@@ -3570,6 +3610,8 @@ function updatePetProgressOnSessionEnd({ answered = 0, accuracy = 0, mode = 'stu
     const today = petDateKeyLocal();
     const yesterday = petAddDaysToKey(today, -1);
     const last = p.lastStudyDate;
+    const gapDays = last ? petDiffDaysBetweenKeys(last, today) : 0;
+    const sessionComboMax = Math.max(0, Number(gameState.__sessionComboMax || 0));
     let streakChanged = false;
     if (last === today) {
         // mesma data: não mexe no streak
@@ -3592,8 +3634,24 @@ function updatePetProgressOnSessionEnd({ answered = 0, accuracy = 0, mode = 'stu
     if (p.streak >= 14 && awardPetBadge(p, 'streak_14')) newlyUnlocked.push('streak_14');
     if (Number(p.missionStreak || 0) >= 3 && awardPetBadge(p, 'mission_3')) newlyUnlocked.push('mission_3');
     if (Number(p.missionStreak || 0) >= 7 && awardPetBadge(p, 'mission_7')) newlyUnlocked.push('mission_7');
+    if (Number(p.missionStreak || 0) >= 14 && awardPetBadge(p, 'mission_14')) newlyUnlocked.push('mission_14');
     if (Number(accuracy) >= 90 && Number(answered) >= 10 && awardPetBadge(p, 'accuracy_90')) newlyUnlocked.push('accuracy_90');
     if (String(mode) === 'rapid' && Number(accuracy) >= 90 && Number(answered) >= 10 && awardPetBadge(p, 'rapid_90')) newlyUnlocked.push('rapid_90');
+    let perfectSessionReward = { xp: 0, hints: 0, awarded: false };
+    if (Number(accuracy) >= 100 && Number(answered) >= 10) {
+        if (awardPetBadge(p, 'perfect_session')) newlyUnlocked.push('perfect_session');
+        perfectSessionReward = { xp: 20, hints: 2, awarded: true };
+        p.rapidHintCredits = Math.max(0, Number(p.rapidHintCredits || 0)) + perfectSessionReward.hints;
+    }
+    let comebackReward = { xp: 0, hints: 0, eligible: false, missedDays: 0 };
+    const comebackMeta = getPetComebackMeta(p);
+    if (comebackMeta.eligible) {
+        comebackReward = { xp: comebackMeta.xp, hints: comebackMeta.hints, eligible: true, missedDays: comebackMeta.missedDays };
+        p.lastComebackDate = today;
+        p.rapidHintCredits = Math.max(0, Number(p.rapidHintCredits || 0)) + comebackReward.hints;
+        if (awardPetBadge(p, 'comeback_return')) newlyUnlocked.push('comeback_return');
+    }
+    if (sessionComboMax >= 5 && awardPetBadge(p, 'combo_5')) newlyUnlocked.push('combo_5');
     const personalBest = updatePetPersonalBest(p, {
         mode,
         operation: gameState.currentOperation,
@@ -3623,7 +3681,7 @@ function updatePetProgressOnSessionEnd({ answered = 0, accuracy = 0, mode = 'stu
     } catch (_) {}
     savePetProgress(p);
     try { refreshPetProgressMini(); } catch (_) {}
-    return { progress: p, newlyUnlocked, streakChanged, streakReward, streakRewardHints, personalBest, personalBestRewardHints };
+    return { progress: p, newlyUnlocked, streakChanged, streakReward, streakRewardHints, personalBest, personalBestRewardHints, perfectSessionReward, comebackReward, sessionComboMax, gapDays };
 }
 // --- Prioridade 3+: Recompensa de sequência (XP) + Medalhas na tela de Resultado ---
 function refreshResultScreenXPSummary() {
@@ -3706,8 +3764,11 @@ function renderPetSessionRewardsOnResultScreen() {
         const rapidTrail = (gameState.__rapidMultiplicationTrailResult && gameState.__rapidMultiplicationTrailResult.passed) ? gameState.__rapidMultiplicationTrailResult : null;
         const mission = ensurePetDailyMission();
         const missionComplete = mission && Number(mission.completedAt || 0) > 0;
-        const extraHintChips = Math.max(0, Number(upd.streakRewardHints || 0)) + Math.max(0, Number(upd.personalBestRewardHints || 0));
-        if (!rewardXP && unlocked.length === 0 && !personalBest && !missionStreak && !rapidTrail && !missionComplete) {
+        const comebackReward = upd.comebackReward && upd.comebackReward.eligible ? upd.comebackReward : null;
+        const perfectReward = upd.perfectSessionReward && upd.perfectSessionReward.awarded ? upd.perfectSessionReward : null;
+        const comboMax = Math.max(0, Number(upd.sessionComboMax || 0));
+        const extraHintChips = Math.max(0, Number(upd.streakRewardHints || 0)) + Math.max(0, Number(upd.personalBestRewardHints || 0)) + Math.max(0, Number(comebackReward?.hints || 0)) + Math.max(0, Number(perfectReward?.hints || 0));
+        if (!rewardXP && unlocked.length === 0 && !personalBest && !missionStreak && !rapidTrail && !missionComplete && !comebackReward && !perfectReward && !comboMax) {
             wrap.classList.add('hidden');
             return;
         }
@@ -3725,8 +3786,11 @@ function renderPetSessionRewardsOnResultScreen() {
             <span class="pet-pill-chip">🔥 Sequência: ${streakNow} dia${streakNow === 1 ? '' : 's'}</span>
             ${missionStreak ? `<span class="pet-pill-chip">🎯 Missões: ${missionStreak} dia${missionStreak === 1 ? '' : 's'}</span>` : ``}
             ${rewardXP ? `<span class="pet-pill-chip">🎁 Bônus: +${rewardXP} XP</span>` : ``}
+            ${comebackReward ? `<span class="pet-pill-chip">🔁 Volta por cima: +${Number(comebackReward.xp || 0)} XP</span>` : ``}
+            ${perfectReward ? `<span class="pet-pill-chip">💯 Sessão perfeita: +${Number(perfectReward.xp || 0)} XP</span>` : ``}
             ${extraHintChips ? `<span class="pet-pill-chip">💡 +${extraHintChips} dica${extraHintChips === 1 ? '' : 's'} rápida${extraHintChips === 1 ? '' : 's'}</span>` : ``}
             ${personalBest ? `<span class="pet-pill-chip">🏁 Novo recorde: ${diagEscapeHtml(personalBest.label)} • ${Number(personalBest.best?.accuracy || 0)}%</span>` : ``}
+            ${comboMax >= 3 ? `<span class="pet-pill-chip">⚡ Combo máximo: ${comboMax}</span>` : ``}
             ${missionComplete ? `<span class="pet-pill-chip">🎯 Missão concluída</span>` : ``}
             ${rapidTrail ? `<span class="pet-pill-chip">🚀 ${rapidTrail.completedTrail ? 'Trilha superada' : `Próximo nível: ${petLevelLabel(rapidTrail.nextLevel, { isRapidMode: true })}`}</span>` : ``}
           </div>
@@ -3811,19 +3875,27 @@ function refreshPetProgressMini() {
     const hintCredits = Math.max(0, Number(p.rapidHintCredits || 0));
     const mission = ensurePetDailyMission();
     chip.textContent = `🔥 Sequência: ${s} dia${s === 1 ? '' : 's'}`;
-    chip.title = `Recorde: ${Number(p.bestStreak || 0)} dia(s) • Missões seguidas: ${Number(p.missionStreak || 0)} • Missões concluídas: ${Number(p.missionsCompleted || 0)} • Sessões: ${Number(p.totalSessions || 0)} • Questões: ${Number(p.totalAnswered || 0)} • Dicas rápidas extras: ${hintCredits} • ${getPetDailyMissionHomeText(mission)}`;
+    const comeback = getPetComebackMeta(p);
+    chip.title = `Recorde: ${Number(p.bestStreak || 0)} dia(s) • Missões seguidas: ${Number(p.missionStreak || 0)} • Missões concluídas: ${Number(p.missionsCompleted || 0)} • Sessões: ${Number(p.totalSessions || 0)} • Questões: ${Number(p.totalAnswered || 0)} • Dicas rápidas extras: ${hintCredits}${comeback.eligible ? ` • Bônus de retorno pronto: +${comeback.xp} XP` : ''} • ${getPetDailyMissionHomeText(mission)}`;
     try { refreshPetHomeSmartCta(); } catch (_) {}
 }
 function refreshPetHomeSmartCta() {
     try {
         const mission = ensurePetDailyMission();
         const cta = document.querySelector('.call-to-action-paragraph');
-        if (cta) cta.textContent = getPetDailyMissionHomeText(mission);
+        const comeback = getPetComebackMeta();
+        if (cta) {
+            if (comeback.eligible) cta.textContent = `Volte ao ritmo e ganhe bônus de retorno.`;
+            else cta.textContent = getPetDailyMissionHomeText(mission);
+        }
         const btn = document.getElementById('btn-continue-session');
         const snap = loadSavedPetSession();
         if (btn && snap) {
             btn.textContent = `▶ Continuar ${formatOperationLabel(snap.operation)} • ${petLevelLabel(snap.level)}`;
             btn.title = `Retomar ${formatOperationLabel(snap.operation)} no nível ${petLevelLabel(snap.level)}.`;
+        } else if (btn && comeback.eligible) {
+            btn.textContent = `▶ Voltar com bônus`;
+            btn.title = `Você ficou ${comeback.missedDays} dia${comeback.missedDays === 1 ? '' : 's'} sem jogar. Toque para voltar com bônus.`;
         } else if (btn && mission) {
             btn.textContent = `▶ Jogar agora`;
             btn.title = `${getPetDailyMissionHomeText(mission)} Toque para começar no ponto sugerido.`;
@@ -9779,6 +9851,16 @@ function endTraining() {
                     PET_LEVEL1_UI.showToast(`🎁 Bônus de sequência: +${bonus} XP (${lbl})`);
                 } catch (_) {}
             }
+            const comeback = upd && upd.comebackReward && upd.comebackReward.eligible ? upd.comebackReward : null;
+            if (comeback && Number(comeback.xp || 0) > 0) {
+                grantPetBonusXP(Number(comeback.xp || 0));
+                try { PET_LEVEL1_UI.showToast(`🔁 Volta por cima: +${Number(comeback.xp || 0)} XP`, { type: 'success', timeout: 2600 }); } catch (_) {}
+            }
+            const perfect = upd && upd.perfectSessionReward && upd.perfectSessionReward.awarded ? upd.perfectSessionReward : null;
+            if (perfect && Number(perfect.xp || 0) > 0) {
+                grantPetBonusXP(Number(perfect.xp || 0));
+                try { PET_LEVEL1_UI.showToast(`💯 Sessão perfeita: +${Number(perfect.xp || 0)} XP`, { type: 'success', timeout: 2600 }); } catch (_) {}
+            }
         } catch (_) {}
         if (upd && Array.isArray(upd.newlyUnlocked) && upd.newlyUnlocked.length) {
             const cat = getPetBadgeCatalog();
@@ -13407,12 +13489,24 @@ function buildQuestionOptions(operation, answer, ctx = {}) {
     }
     return options;
 }
+function formatQuestionPrompt(questionString) {
+    let text = String(questionString || '').replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    text = text.replace(/\s+([?!:;,.])/g, '$1').replace(/\?\s*\?/g, '?').trim();
+    if (/[?!.:]$/.test(text)) return text;
+    const lower = text.toLowerCase();
+    const looksVerbalPrompt = /(^|\b)(qual|quais|quanto|quantos|quantas|quando|como|onde|por que|porque)\b/.test(lower)
+        || /tem agora|sobraram|sobrou|ao todo|diferença|diferença entre|valor exato|qual é o valor|qual valor|quanto vale|qual é o resto|mais perto|medida do lado|depois some quanto|depois tire quanto|grupos completos cabem/.test(lower)
+        || /[.:]/.test(text);
+    return looksVerbalPrompt ? `${text}?` : text;
+}
 function buildQuestionPayload(operation, num1, num2, answer, questionString, questionSpeak, stageLabel) {
-    const resolvedOperation = inferSemanticOperationFromQuestionText(questionString, operation) || operation;
-    const options = buildQuestionOptions(resolvedOperation, answer, { num1, num2, stageLabel: stageLabel || '', questionString, voiceQuestion: questionSpeak || questionString, level: gameState.currentLevel || '' });
+    const safeQuestionString = formatQuestionPrompt(questionString);
+    const resolvedOperation = inferSemanticOperationFromQuestionText(safeQuestionString, operation) || operation;
+    const options = buildQuestionOptions(resolvedOperation, answer, { num1, num2, stageLabel: stageLabel || '', questionString: safeQuestionString, voiceQuestion: questionSpeak || safeQuestionString, level: gameState.currentLevel || '' });
     return {
-        question: `${questionString} = ?`,
-        voiceQuestion: questionSpeak || questionString,
+        question: safeQuestionString,
+        voiceQuestion: questionSpeak || safeQuestionString,
         answer,
         options,
         voiceOptions: options,
@@ -13788,6 +13882,83 @@ function finalizeAuditedQuestionSelection(q, ctx = {}) {
     q.questionAuditInfo = info;
     return q;
 }
+function getAuditLevelBand(level = gameState.currentLevel || '') {
+    const safe = String(level || '').toLowerCase().trim();
+    if (safe === 'apprentice' || safe === 'easy' || safe === 'medium' || safe === 'advanced') return safe;
+    return 'medium';
+}
+function pickAuditCollection(level, presets) {
+    const band = getAuditLevelBand(level);
+    return presets[band] || presets.medium || presets.easy || presets.apprentice || presets.advanced;
+}
+function pickAuditPair(items) {
+    const pair = randFrom(items);
+    if (Array.isArray(pair)) {
+        return {
+            name: pair[0],
+            item: pair[1],
+            quantWord: pair[2] || 'Quantos'
+        };
+    }
+    return pair || { name: 'Ana', item: 'itens', quantWord: 'Quantos' };
+}
+function buildAdditionMissingAuditQuestion(label, level = gameState.currentLevel || '') {
+    const band = getAuditLevelBand(level);
+    let total = 0;
+    let known = 0;
+    if (band === 'apprentice') {
+        total = randomInt(3, 20);
+        known = randomInt(0, total - 1);
+    } else if (band === 'easy') {
+        total = randomInt(8, 60);
+        known = randomInt(1, total - 1);
+    } else if (band === 'advanced') {
+        total = randomInt(250, 1800);
+        known = randomInt(40, total - 40);
+    } else {
+        total = randomInt(90, 480);
+        known = randomInt(20, Math.max(21, total - 20));
+    }
+    return qAdditionMissing(total, known, label, Math.random() < 0.5);
+}
+function buildSubtractionUnknownMinuendAuditQuestion(label, level = gameState.currentLevel || '') {
+    const band = getAuditLevelBand(level);
+    let diff = 0;
+    let sub = 0;
+    if (band === 'apprentice') {
+        diff = randomInt(1, 12);
+        sub = randomInt(0, 9);
+    } else if (band === 'easy') {
+        diff = randomInt(5, 35);
+        sub = randomInt(1, 25);
+    } else if (band === 'advanced') {
+        diff = randomInt(80, 600);
+        sub = randomInt(40, 500);
+    } else {
+        diff = randomInt(10, 95);
+        sub = randomInt(5, 60);
+    }
+    return qUnknownMinuend(diff, sub, label);
+}
+function buildSubtractionUnknownSubtrahendAuditQuestion(label, level = gameState.currentLevel || '') {
+    const band = getAuditLevelBand(level);
+    let minuend = 0;
+    let diff = 0;
+    if (band === 'apprentice') {
+        minuend = randomInt(5, 20);
+        diff = randomInt(1, minuend - 1);
+    } else if (band === 'easy') {
+        minuend = randomInt(10, 60);
+        diff = randomInt(1, minuend - 1);
+    } else if (band === 'advanced') {
+        minuend = randomInt(120, 1200);
+        diff = randomInt(20, minuend - 20);
+    } else {
+        minuend = randomInt(20, 180);
+        diff = randomInt(5, minuend - 5);
+    }
+    return qUnknownSubtrahend(minuend, diff, label);
+}
 function buildRootSelfProductQuestion(label) {
     const base = randomInt(4, 25);
     const square = base * base;
@@ -13834,13 +14005,23 @@ function buildPowerMissingBaseAuditQuestion(label) {
     q.auditStageVariant = 'power-missing-base';
     return refreshQuestionDistractors(q, { strategyFamily: 'inverse-power', studyDistractorsOnly: !gameState.isRapidMode });
 }
-function buildAdditionContextAuditQuestion(label) {
-    const a = randomInt(120, 480);
-    const b = randomInt(25, 190);
+function buildAdditionContextAuditQuestion(label, level = gameState.currentLevel || '') {
+    const preset = pickAuditCollection(level, {
+        apprentice: { a: [8, 20], b: [1, 9] },
+        easy: { a: [12, 60], b: [3, 25] },
+        medium: { a: [120, 480], b: [25, 190] },
+        advanced: { a: [250, 1200], b: [80, 650] }
+    });
+    const a = randomInt(preset.a[0], preset.a[1]);
+    const b = randomInt(preset.b[0], preset.b[1]);
     const total = a + b;
-    const names = [['Ana', 'figurinhas'], ['Bia', 'livros'], ['Caio', 'pontos'], ['Davi', 'cartas']];
-    const pair = randFrom(names);
-    const q = buildQuestionPayload('addition', a, b, total, `${pair[0]} tinha ${a} ${pair[1]} e ganhou mais ${b}. Quantos ${pair[1]} tem agora`, `${pair[0]} tinha ${a} ${pair[1]} e ganhou mais ${b}. Quantos ${pair[1]} tem agora`, label);
+    const pair = pickAuditPair([
+        ['Ana', 'figurinhas', 'Quantas'],
+        ['Bia', 'livros', 'Quantos'],
+        ['Caio', 'pontos', 'Quantos'],
+        ['Davi', 'cartas', 'Quantas']
+    ]);
+    const q = buildQuestionPayload('addition', a, b, total, `${pair.name} tinha ${a} ${pair.item} e ganhou mais ${b}. ${pair.quantWord} ${pair.item} tem agora?`, `${pair.name} tinha ${a} ${pair.item} e ganhou mais ${b}. ${pair.quantWord.toLowerCase()} ${pair.item} tem agora`, label);
     q.auditStageVariant = 'addition-context';
     return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
 }
@@ -13863,60 +14044,107 @@ function buildAdditionEstimateAuditQuestion(label) {
     q.roundingSupport = { roundedA, roundedB, placeValue: 10 };
     return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
 }
-function buildAdditionDecompositionAuditQuestion(label) {
-    const a = randFrom([126, 148, 235, 257, 348, 462]);
-    const addTens = randFrom([20, 30, 40, 50]);
-    const addUnits = randFrom([3, 4, 5, 6, 7, 8, 9]);
+function buildAdditionDecompositionAuditQuestion(label, level = gameState.currentLevel || '') {
+    const preset = pickAuditCollection(level, {
+        apprentice: { a: [12, 39], tens: [10, 20], units: [1, 4] },
+        easy: { a: [24, 89], tens: [10, 30], units: [1, 6] },
+        medium: { a: [126, 462], tens: [20, 50], units: [3, 9] },
+        advanced: { a: [280, 1450], tens: [20, 90], units: [3, 9] }
+    });
+    const a = randomInt(preset.a[0], preset.a[1]);
+    const addTens = randFrom(Array.from({ length: Math.floor((preset.tens[1] - preset.tens[0]) / 10) + 1 }, (_, i) => preset.tens[0] + (i * 10)));
+    const addUnits = randomInt(preset.units[0], preset.units[1]);
     const b = addTens + addUnits;
-    const q = buildQuestionPayload('addition', a, b, addUnits, `Para somar ${a} + ${b}, primeiro faça ${a} + ${addTens}. Depois some quanto`, `para somar ${a} mais ${b}, primeiro faça ${a} mais ${addTens}. Depois some quanto`, label);
+    const q = buildQuestionPayload('addition', a, b, addUnits, `Para somar ${a} + ${b}, primeiro faça ${a} + ${addTens}. Depois some quanto?`, `para somar ${a} mais ${b}, primeiro faça ${a} mais ${addTens}. Depois some quanto`, label);
     q.auditStageVariant = 'addition-decomposition';
     return refreshQuestionDistractors(q, { strategyFamily: 'missing-term', studyDistractorsOnly: !gameState.isRapidMode });
 }
-function buildAdditionMentalAuditQuestion(label) {
-    const anchor = randFrom([199, 299, 399, 499, 599]);
-    const b = randFrom([11, 18, 23, 36, 47, 58, 74, 85]);
+function buildAdditionMentalAuditQuestion(label, level = gameState.currentLevel || '') {
+    const preset = pickAuditCollection(level, {
+        apprentice: { anchors: [9, 19, 29, 39], b: [2, 9] },
+        easy: { anchors: [19, 29, 39, 49, 59, 69], b: [6, 18] },
+        medium: { anchors: [199, 299, 399, 499, 599], b: [11, 85] },
+        advanced: { anchors: [199, 299, 399, 499, 599, 699, 799, 899], b: [18, 240] }
+    });
+    const anchor = randFrom(preset.anchors);
+    const b = randomInt(preset.b[0], preset.b[1]);
     const q = buildQuestionPayload('addition', anchor, b, anchor + b, `${anchor} + ${b}`, `${anchor} mais ${b}`, label);
     q.auditStageVariant = 'addition-mental-anchor';
-    q.bridgeHint = 'Use compensação: complete a centena seguinte e depois ajuste.';
+    q.bridgeHint = 'Use compensação: complete a dezena, centena ou milhar seguinte e depois ajuste.';
     return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
 }
-function buildSubtractionContextAuditQuestion(label) {
-    const total = randomInt(120, 480);
-    const used = randomInt(20, total - 30);
+function buildSubtractionContextAuditQuestion(label, level = gameState.currentLevel || '') {
+    const preset = pickAuditCollection(level, {
+        apprentice: { total: [8, 20], minUsed: 1, buffer: 2 },
+        easy: { total: [15, 80], minUsed: 2, buffer: 4 },
+        medium: { total: [120, 480], minUsed: 20, buffer: 30 },
+        advanced: { total: [250, 1400], minUsed: 40, buffer: 60 }
+    });
+    const total = randomInt(preset.total[0], preset.total[1]);
+    const used = randomInt(preset.minUsed, Math.max(preset.minUsed, total - preset.buffer));
     const left = total - used;
-    const pair = randFrom([['Lia', 'figurinhas'], ['Noah', 'pontos'], ['Iris', 'livros'], ['Ravi', 'cartas']]);
-    const q = buildQuestionPayload('subtraction', total, used, left, `${pair[0]} tinha ${total} ${pair[1]} e usou ${used}. Quantos ${pair[1]} sobraram`, `${pair[0]} tinha ${total} ${pair[1]} e usou ${used}. Quantos ${pair[1]} sobraram`, label);
+    const pair = pickAuditPair([
+        ['Lia', 'figurinhas', 'Quantas'],
+        ['Noah', 'pontos', 'Quantos'],
+        ['Iris', 'livros', 'Quantos'],
+        ['Ravi', 'cartas', 'Quantas']
+    ]);
+    const q = buildQuestionPayload('subtraction', total, used, left, `${pair.name} tinha ${total} ${pair.item} e usou ${used}. ${pair.quantWord} ${pair.item} sobraram?`, `${pair.name} tinha ${total} ${pair.item} e usou ${used}. ${pair.quantWord.toLowerCase()} ${pair.item} sobraram`, label);
     q.auditStageVariant = 'subtraction-context';
     return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
 }
-function buildSubtractionDifferenceAuditQuestion(label) {
-    const b = randomInt(25, 240);
-    const diff = randomInt(8, 95);
+function buildSubtractionDifferenceAuditQuestion(label, level = gameState.currentLevel || '') {
+    const preset = pickAuditCollection(level, {
+        apprentice: { b: [4, 15], diff: [1, 9] },
+        easy: { b: [12, 55], diff: [2, 18] },
+        medium: { b: [25, 240], diff: [8, 95] },
+        advanced: { b: [120, 1800], diff: [20, 350] }
+    });
+    const b = randomInt(preset.b[0], preset.b[1]);
+    const diff = randomInt(preset.diff[0], preset.diff[1]);
     const a = b + diff;
     const q = buildQuestionPayload('subtraction', a, b, diff, `Uma turma fez ${a} pontos e outra ${b}. Qual é a diferença entre as pontuações`, `uma turma fez ${a} pontos e outra ${b}. Qual é a diferença entre as pontuações`, label);
     q.auditStageVariant = 'subtraction-difference';
     return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
 }
-function buildSubtractionDecompositionAuditQuestion(label) {
-    const total = randFrom([142, 176, 203, 258, 314, 402]);
-    const tens = randFrom([10, 20, 30, 40]);
-    const units = randFrom([3, 4, 5, 6, 7, 8, 9]);
+function buildSubtractionDecompositionAuditQuestion(label, level = gameState.currentLevel || '') {
+    const preset = pickAuditCollection(level, {
+        apprentice: { total: [12, 39], tens: [10, 20], units: [1, 4] },
+        easy: { total: [24, 99], tens: [10, 30], units: [1, 6] },
+        medium: { total: [142, 402], tens: [10, 40], units: [3, 9] },
+        advanced: { total: [280, 1500], tens: [20, 90], units: [3, 9] }
+    });
+    const total = randomInt(preset.total[0], preset.total[1]);
+    const tens = randFrom(Array.from({ length: Math.floor((preset.tens[1] - preset.tens[0]) / 10) + 1 }, (_, i) => preset.tens[0] + (i * 10)));
+    const units = randomInt(preset.units[0], preset.units[1]);
     const sub = tens + units;
-    const q = buildQuestionPayload('subtraction', total, sub, units, `Para calcular ${total} - ${sub}, primeiro faça ${total} - ${tens}. Depois tire quanto`, `para calcular ${total} menos ${sub}, primeiro faça ${total} menos ${tens}. Depois tire quanto`, label);
+    const q = buildQuestionPayload('subtraction', total, sub, units, `Para calcular ${total} - ${sub}, primeiro faça ${total} - ${tens}. Depois tire quanto?`, `para calcular ${total} menos ${sub}, primeiro faça ${total} menos ${tens}. Depois tire quanto`, label);
     q.auditStageVariant = 'subtraction-decomposition';
     return refreshQuestionDistractors(q, { strategyFamily: 'missing-term', studyDistractorsOnly: !gameState.isRapidMode });
 }
-function buildSubtractionMentalAuditQuestion(label) {
-    const total = randFrom([200, 300, 400, 500, 600, 700]);
-    const near = randFrom([18, 19, 21, 38, 39, 41, 98, 99, 101, 198, 199]);
+function buildSubtractionMentalAuditQuestion(label, level = gameState.currentLevel || '') {
+    const preset = pickAuditCollection(level, {
+        apprentice: { totals: [20, 30, 40], near: [8, 9, 11, 18, 19] },
+        easy: { totals: [50, 60, 70, 80, 90, 100], near: [8, 9, 11, 18, 19, 21, 28, 29] },
+        medium: { totals: [200, 300, 400, 500, 600, 700], near: [18, 19, 21, 38, 39, 41, 98, 99, 101, 198, 199] },
+        advanced: { totals: [300, 400, 500, 600, 700, 800, 900, 1000], near: [18, 19, 21, 38, 39, 41, 98, 99, 101, 198, 199, 298, 299] }
+    });
+    const total = randFrom(preset.totals);
+    const near = randFrom(preset.near.filter((n) => n < total));
     const q = buildQuestionPayload('subtraction', total, near, total - near, `${total} - ${near}`, `${total} menos ${near}`, label);
     q.auditStageVariant = 'subtraction-mental-anchor';
-    q.bridgeHint = 'Aproxime para a dezena ou centena e depois compense.';
+    q.bridgeHint = 'Aproxime para a dezena, centena ou milhar e depois compense.';
     return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
 }
-function buildMultiplicationContextAuditQuestion(label) {
-    const groups = randomInt(6, 18);
-    const size = randomInt(7, 16);
+function buildMultiplicationContextAuditQuestion(label, level = gameState.currentLevel || '') {
+    const preset = pickAuditCollection(level, {
+        apprentice: { groups: [2, 5], size: [2, 5] },
+        easy: { groups: [2, 8], size: [2, 10] },
+        medium: { groups: [4, 12], size: [4, 15] },
+        advanced: { groups: [6, 18], size: [7, 20] }
+    });
+    const groups = randomInt(preset.groups[0], preset.groups[1]);
+    const size = randomInt(preset.size[0], preset.size[1]);
     const total = groups * size;
     const q = buildQuestionPayload('multiplication', groups, size, total, `${groups} caixas com ${size} itens em cada uma. Quantos itens há ao todo`, `${groups} caixas com ${size} itens em cada uma. Quantos itens há ao todo`, label);
     q.auditStageVariant = 'multiplication-context';
@@ -13939,9 +14167,15 @@ function buildMultiplicationDistributiveAuditQuestion(label) {
     q.auditStageVariant = 'multiplication-distributive';
     return refreshQuestionDistractors(q, { strategyFamily: 'missing-factor', studyDistractorsOnly: !gameState.isRapidMode });
 }
-function buildDivisionContextAuditQuestion(label) {
-    const divisor = randFrom([2,3,4,5,6,8,9,10,12]);
-    const quotient = randomInt(4, 18);
+function buildDivisionContextAuditQuestion(label, level = gameState.currentLevel || '') {
+    const preset = pickAuditCollection(level, {
+        apprentice: { divisors: [2,3,4,5], quotient: [2, 8] },
+        easy: { divisors: [2,3,4,5,6,8,10], quotient: [2, 10] },
+        medium: { divisors: [2,3,4,5,6,8,9,10,12], quotient: [4, 14] },
+        advanced: { divisors: [3,4,5,6,8,9,10,12], quotient: [6, 18] }
+    });
+    const divisor = randFrom(preset.divisors);
+    const quotient = randomInt(preset.quotient[0], preset.quotient[1]);
     const total = divisor * quotient;
     const q = buildQuestionPayload('division', total, divisor, quotient, `${total} itens foram organizados em ${divisor} grupos iguais. Quantos itens ficaram em cada grupo`, `${total} itens foram organizados em ${divisor} grupos iguais. Quantos itens ficaram em cada grupo`, label);
     q.auditStageVariant = 'division-context';
@@ -13957,18 +14191,30 @@ function buildDivisionEstimateAuditQuestion(label) {
     q.auditStageVariant = 'division-estimate';
     return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
 }
-function buildDivisionRemainderAuditQuestion(label) {
-    const divisor = randFrom([3,4,5,6,7,8,9]);
-    const quotient = randomInt(4, 14);
+function buildDivisionRemainderAuditQuestion(label, level = gameState.currentLevel || '') {
+    const preset = pickAuditCollection(level, {
+        apprentice: { divisors: [2,3,4,5], quotient: [2, 8] },
+        easy: { divisors: [3,4,5,6], quotient: [3, 10] },
+        medium: { divisors: [3,4,5,6,7,8,9], quotient: [4, 14] },
+        advanced: { divisors: [4,5,6,7,8,9,10,12], quotient: [5, 18] }
+    });
+    const divisor = randFrom(preset.divisors);
+    const quotient = randomInt(preset.quotient[0], preset.quotient[1]);
     const remainder = randomInt(1, divisor - 1);
     const total = divisor * quotient + remainder;
     const q = buildQuestionPayload('division', total, divisor, remainder, `${total} ÷ ${divisor}. Qual é o resto`, `${total} dividido por ${divisor}. Qual é o resto`, label);
     q.auditStageVariant = 'division-remainder';
     return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
 }
-function buildDivisionErrorAuditQuestion(label) {
-    const divisor = randFrom([4,5,6,7,8,9]);
-    const quotient = randomInt(5, 12);
+function buildDivisionErrorAuditQuestion(label, level = gameState.currentLevel || '') {
+    const preset = pickAuditCollection(level, {
+        apprentice: { divisors: [2,3,4,5], quotient: [2, 8] },
+        easy: { divisors: [3,4,5,6], quotient: [3, 10] },
+        medium: { divisors: [4,5,6,7,8,9], quotient: [5, 12] },
+        advanced: { divisors: [4,5,6,7,8,9,10,12], quotient: [6, 16] }
+    });
+    const divisor = randFrom(preset.divisors);
+    const quotient = randomInt(preset.quotient[0], preset.quotient[1]);
     const remainder = randomInt(1, divisor - 1);
     const total = divisor * quotient + remainder;
     const q = buildQuestionPayload('division', total, divisor, quotient, `Em ${total} ÷ ${divisor}, quantos grupos completos cabem antes de sobrar`, `em ${total} dividido por ${divisor}, quantos grupos completos cabem antes de sobrar`, label);
@@ -14016,64 +14262,66 @@ function buildMultiplicationRelationAuditQuestion(label) {
     return q;
 }
 function getQuestionBankAuditCandidateBuilders(operation, level, stageLabel, fallbackQuestion) {
-    const label = normalizeQuestionAuditStageLabel(stageLabel);
+    const label = normalizeTrailLabel(normalizeSkillStageLabel(stageLabel));
     const builders = [];
     const add = (fn) => { if (typeof fn === 'function') builders.push(fn); };
+    const paddedLabel = ` ${label} `;
+    const has = (...terms) => terms.some((term) => paddedLabel.includes(` ${normalizeTrailLabel(term)} `));
     if (operation === 'addition') {
-        if (label.includes('contexto') || label.includes('composição') || label.includes('leitura de valores')) add(() => buildAdditionContextAuditQuestion(stageLabel));
-        if (label.includes('estimativa')) add(() => buildAdditionEstimateAuditQuestion(stageLabel));
-        if (label.includes('decomposição')) add(() => buildAdditionDecompositionAuditQuestion(stageLabel));
-        if (label.includes('estratégias mentais')) add(() => buildAdditionMentalAuditQuestion(stageLabel));
-        if (label.includes('parcela faltante') || label.includes('parcela desconhecida') || label.includes('completar')) add(() => qAdditionMissing(randomInt(90, 480), randomInt(20, 89), stageLabel, Math.random() < 0.5));
+        if (has('decomposição')) add(() => buildAdditionDecompositionAuditQuestion(stageLabel, level));
+        if (has('contexto', 'composição', 'leitura de valores')) add(() => buildAdditionContextAuditQuestion(stageLabel, level));
+        if (has('estimativa')) add(() => buildAdditionEstimateAuditQuestion(stageLabel));
+        if (has('estratégias mentais')) add(() => buildAdditionMentalAuditQuestion(stageLabel, level));
+        if (has('parcela faltante', 'parcela desconhecida', 'completar')) add(() => buildAdditionMissingAuditQuestion(stageLabel, level));
     }
     if (operation === 'subtraction') {
-        if (label.includes('contexto') || label.includes('situações-problema')) add(() => buildSubtractionContextAuditQuestion(stageLabel));
-        if (label.includes('diferença') || label.includes('interpretação da diferença')) add(() => buildSubtractionDifferenceAuditQuestion(stageLabel));
-        if (label.includes('decomposição')) add(() => buildSubtractionDecompositionAuditQuestion(stageLabel));
-        if (label.includes('estratégias mentais')) add(() => buildSubtractionMentalAuditQuestion(stageLabel));
-        if (label.includes('quanto falta')) add(() => qUnknownSubtrahend(randomInt(15, 60), randomInt(1, 14), stageLabel));
-        if (label.includes('número inicial') || label.includes('minuendo desconhecido') || label.includes('resultado faltante')) add(() => qUnknownMinuend(randomInt(10, 95), randomInt(5, 60), stageLabel));
-        if (label.includes('subtraendo desconhecido') || label.includes('número que falta')) add(() => qUnknownSubtrahend(randomInt(20, 180), randomInt(5, 95), stageLabel));
+        if (has('decomposição')) add(() => buildSubtractionDecompositionAuditQuestion(stageLabel, level));
+        if (has('contexto', 'situações-problema')) add(() => buildSubtractionContextAuditQuestion(stageLabel, level));
+        if (has('diferença', 'interpretação da diferença')) add(() => buildSubtractionDifferenceAuditQuestion(stageLabel, level));
+        if (has('estratégias mentais')) add(() => buildSubtractionMentalAuditQuestion(stageLabel, level));
+        if (has('quanto falta')) add(() => buildSubtractionUnknownSubtrahendAuditQuestion(stageLabel, level));
+        if (has('número inicial', 'minuendo desconhecido', 'resultado faltante')) add(() => buildSubtractionUnknownMinuendAuditQuestion(stageLabel, level));
+        if (has('subtraendo desconhecido', 'número que falta')) add(() => buildSubtractionUnknownSubtrahendAuditQuestion(stageLabel, level));
     }
     if (operation === 'multiplication') {
-        if (label.includes('relação multiplicação e divisão')) add(() => buildMultiplicationRelationAuditQuestion(stageLabel));
-        if (label.includes('contextos multiplicativos')) add(() => buildMultiplicationContextAuditQuestion(stageLabel));
-        if (label.includes('dobrar para multiplicar')) add(() => buildMultiplicationDoublingAuditQuestion(stageLabel));
-        if (label.includes('distributiva')) add(() => buildMultiplicationDistributiveAuditQuestion(stageLabel));
+        if (has('relação multiplicação e divisão')) add(() => buildMultiplicationRelationAuditQuestion(stageLabel));
+        if (has('contextos multiplicativos')) add(() => buildMultiplicationContextAuditQuestion(stageLabel, level));
+        if (has('dobrar para multiplicar')) add(() => buildMultiplicationDoublingAuditQuestion(stageLabel));
+        if (has('distributiva')) add(() => buildMultiplicationDistributiveAuditQuestion(stageLabel));
     }
     if (operation === 'division') {
-        if (label.includes('relação com multiplicação') || label.includes('relação divisão') || label.includes('múltiplos e divisores') || label.includes('conferência pela multiplicação')) {
+        if (has('relação com multiplicação', 'relação divisão', 'múltiplos e divisores', 'conferência pela multiplicação')) {
             add(() => buildDivisionRelationAuditQuestion(stageLabel));
         }
-        if (label.includes('contexto')) add(() => buildDivisionContextAuditQuestion(stageLabel));
-        if (label.includes('resto') || label.includes('escolher entre quociente e resto')) add(() => buildDivisionRemainderAuditQuestion(stageLabel));
-        if (label.includes('estimativa do quociente')) add(() => buildDivisionEstimateAuditQuestion(stageLabel));
-        if (label.includes('erro comum') || label.includes('erros comuns') || label.includes('comparar divisão exata e não exata')) add(() => buildDivisionErrorAuditQuestion(stageLabel));
+        if (has('contexto')) add(() => buildDivisionContextAuditQuestion(stageLabel, level));
+        if (has('resto', 'escolher entre quociente e resto')) add(() => buildDivisionRemainderAuditQuestion(stageLabel, level));
+        if (has('estimativa do quociente')) add(() => buildDivisionEstimateAuditQuestion(stageLabel));
+        if (has('erro comum', 'erros comuns', 'comparar divisão exata e não exata')) add(() => buildDivisionErrorAuditQuestion(stageLabel, level));
     }
     if (operation === 'potenciacao') {
-        if (label.includes('comparar potência e multiplicação') || label.includes('comparar potência e produto') || label.includes('comparar valores de potências') || label.includes('reconhecer escrita expandida') || label.includes('potência expandida') || label.includes('potência em expressão curta')) {
+        if (has('comparar potência e multiplicação', 'comparar potência e produto', 'comparar valores de potências', 'reconhecer escrita expandida', 'potência expandida', 'potência em expressão curta')) {
             add(() => buildPowerExpandedAuditQuestion(stageLabel));
         }
-        if (label.includes('completar potência') || label.includes('valor faltante em potência')) {
+        if (has('completar potência', 'valor faltante em potência')) {
             add(() => buildPowerMissingBaseAuditQuestion(stageLabel));
         }
-        if (label.includes('erro comum')) add(() => buildPowerErrorAuditQuestion(stageLabel));
-        if (label.includes('aplicação em contexto') || label.includes('consolidação conceitual')) add(() => buildPowerContextAuditQuestion(stageLabel));
+        if (has('erro comum')) add(() => buildPowerErrorAuditQuestion(stageLabel));
+        if (has('aplicação em contexto', 'consolidação conceitual')) add(() => buildPowerContextAuditQuestion(stageLabel));
     }
     if (operation === 'radiciacao') {
-        if (label.includes('relação entre potência e raiz') || label.includes('relação inversa com potência')) {
+        if (has('relação entre potência e raiz', 'relação inversa com potência')) {
             add(() => buildBridgeQuestion('radiciacao', stageLabel));
         }
-        if (label.includes('identificar erro comum em raízes') || label.includes('encontrar número pelo quadrado') || label.includes('completar raiz simples') || label.includes('conferência por multiplicação') || label.includes('valor faltante simples')) {
+        if (has('identificar erro comum em raízes', 'encontrar número pelo quadrado', 'completar raiz simples', 'conferência por multiplicação', 'valor faltante simples')) {
             add(() => buildRootSelfProductQuestion(stageLabel));
         }
-        if (label.includes('raiz em contexto curto')) add(() => buildRootContextQuestion(stageLabel));
-        if (label.includes('comparar resultados') || label.includes('comparar raízes')) add(() => buildRootCompareQuestion(stageLabel));
-        if (label.includes('reconhecer quando não é exata') || label.includes('estimativa') || label.includes('número entre dois quadrados perfeitos') || label.includes('raiz mais próxima')) {
+        if (has('raiz em contexto curto')) add(() => buildRootContextQuestion(stageLabel));
+        if (has('comparar resultados', 'comparar raízes')) add(() => buildRootCompareQuestion(stageLabel));
+        if (has('reconhecer quando não é exata', 'estimativa', 'número entre dois quadrados perfeitos', 'raiz mais próxima')) {
             add(() => buildRootEstimateQuestion(stageLabel));
         }
-        if (label.includes('reconhecer quadrado perfeito')) add(() => buildRootPerfectSquareRecognitionAuditQuestion(stageLabel));
-        if (label.includes('leitura de raiz em expressão curta')) add(() => buildRootExpressionReadAuditQuestion(stageLabel));
+        if (has('reconhecer quadrado perfeito')) add(() => buildRootPerfectSquareRecognitionAuditQuestion(stageLabel));
+        if (has('leitura de raiz em expressão curta')) add(() => buildRootExpressionReadAuditQuestion(stageLabel));
     }
     add(() => fallbackQuestion);
     return builders;
@@ -16962,6 +17210,10 @@ function handleAnswer(selectedAnswer, selectedButton) {
         clearAnswerFocus();
     }
     if (isCorrect) {
+        try {
+            gameState.__sessionCorrectStreak = Math.max(0, Number(gameState.__sessionCorrectStreak || 0)) + 1;
+            gameState.__sessionComboMax = Math.max(Number(gameState.__sessionComboMax || 0), Number(gameState.__sessionCorrectStreak || 0));
+        } catch (_) {}
         // Finaliza (correto)
         if (gameState.isRapidMode && !isTraining) stopTimer();
         setAlternativeResponseLocked(true);
@@ -16987,6 +17239,19 @@ function handleAnswer(selectedAnswer, selectedButton) {
         }
         gameState.score += scoreGain;
         atualizarXP(xpGain);
+        try {
+            if (!gameState.__combo3Rewarded && Number(gameState.__sessionCorrectStreak || 0) >= 3) {
+                gameState.__combo3Rewarded = true;
+                grantPetBonusXP(6);
+                try { PET_LEVEL1_UI.showToast('⚡ Combo 3! +6 XP', { type: 'success', timeout: 1800 }); } catch (_) {}
+            }
+            if (!gameState.__combo5Rewarded && Number(gameState.__sessionCorrectStreak || 0) >= 5) {
+                gameState.__combo5Rewarded = true;
+                grantPetBonusXP(10);
+                grantPetRapidHintCredits(1);
+                try { PET_LEVEL1_UI.showToast('🔥 Combo 5! +10 XP e +1 dica rápida', { type: 'success', timeout: 2200 }); } catch (_) {}
+            }
+        } catch (_) {}
         playerScoreElement.textContent = `${gameState.score} Pontos`;
         recordPriority3RoundOutcome(q, true, selectedAnswer);
         recordOperationTrailQuestionResolution(q, true);
@@ -17028,6 +17293,7 @@ function handleAnswer(selectedAnswer, selectedButton) {
         return;
     }
     // ERRO
+    try { gameState.__sessionCorrectStreak = 0; } catch (_) {}
     try {
         queueCloudAttemptForCurrentProfile(q, selectedAnswer, false, {
             attemptNo,
@@ -18438,7 +18704,7 @@ function initTutorialVideo() {
 // ===== PRIORIDADE 2 — ETAPA AVANÇADA (distratores adaptativos, plausibilidade, estratégia e apoio visual) =====
 function buildTempQuestionForDiagnosis(operation, answer, ctx = {}) {
     const baseQuestion = String(ctx.questionString || '').trim();
-    const question = baseQuestion ? (baseQuestion.includes('=') || baseQuestion.includes('?') ? baseQuestion : `${baseQuestion} = ?`) : '';
+    const question = formatQuestionPrompt(baseQuestion);
     const semanticOperation = String(ctx.semanticOperation || inferSemanticOperationFromQuestionText(question || ctx.voiceQuestion || '', operation) || operation || '');
     return {
         operacao: semanticOperation,
@@ -18899,19 +19165,20 @@ function buildQuestionLearningContract(question) {
     };
 }
 function buildQuestionPayload(operation, num1, num2, answer, questionString, questionSpeak, stageLabel) {
-    const resolvedOperation = inferSemanticOperationFromQuestionText(questionString, operation) || operation;
+    const safeQuestionString = formatQuestionPrompt(questionString);
+    const resolvedOperation = inferSemanticOperationFromQuestionText(safeQuestionString, operation) || operation;
     const options = buildQuestionOptions(resolvedOperation, answer, {
         num1,
         num2,
         stageLabel: stageLabel || '',
-        questionString,
-        voiceQuestion: questionSpeak || questionString,
+        questionString: safeQuestionString,
+        voiceQuestion: questionSpeak || safeQuestionString,
         level: gameState.currentLevel || '',
         studyDistractorsOnly: !gameState.isRapidMode
     });
     const question = {
-        question: `${questionString} = ?`,
-        voiceQuestion: questionSpeak || questionString,
+        question: safeQuestionString,
+        voiceQuestion: questionSpeak || safeQuestionString,
         answer,
         options,
         voiceOptions: options,
