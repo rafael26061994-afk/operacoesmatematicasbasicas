@@ -1,0 +1,13 @@
+VERSÃO OTIMIZADA APLICADA NO MATERIAL
+
+Alterações aplicadas diretamente no código:
+- Correção de geradores com problema estrutural em adição e subtração.
+- Correção de atividades cujo rótulo prometia uma habilidade diferente da questão gerada.
+- Nova geração contextual para: interpretação do resto, escolha entre quociente e resto, comparação entre divisão exata e não exata.
+- Nova geração real para: comparação entre potências, padrão em potências, padrão nas tabuadas 2 e 5, resultado faltante em subtração.
+- Correção do roteamento de auditoria para rótulos como “contextual”.
+- Reforço do modo de apoio com explicações graduais: simples, detalhado e aprofundado.
+- Tutor de ajuda reescrito com fluxo explícito: erro 1, erro 2, acerto com desafio extra.
+- Acessibilidade textual reforçada: leitura simplificada, passo a passo, apoio visual descrito e resposta por digitação.
+- Mensagens de sucesso ajustadas para reforçar desafio extra com propósito pedagógico.
+- Atualização de versão em index.html.

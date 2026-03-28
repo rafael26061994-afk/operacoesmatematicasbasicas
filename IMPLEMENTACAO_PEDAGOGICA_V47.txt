@@ -1,0 +1,169 @@
+IMPLEMENTAÇÃO PEDAGÓGICA V47 — FOCO EM COMPREENSÃO
+
+HOME PAGE
+1. Essa mudança é realmente indispensável?
+Resposta: não.
+2. O sistema funcionaria sem essa alteração?
+Resposta: sim.
+Conclusão: a home NÃO foi alterada estruturalmente.
+
+MELHORIAS APLICADAS
+
+1) Corrigir inconsistência entre habilidade e atividade
+Onde foi aplicada:
+- script.js
+- buildQuestionLearningContract
+- enforceQuestionContracts
+- evaluateQuestionMathAndLearningContracts
+- auditAndFixQuestionBeforeDisplay
+
+O que muda:
+- cada questão passa a carregar contrato de aprendizagem com tipo de aprendizagem e exigência de raciocínio;
+- antes de exibir, a questão é auditada contra regras da própria etapa;
+- quando a questão viola o contrato da etapa, o sistema reconstrói a questão com o banco auditado por estágio.
+
+Como funciona na prática:
+- etapas como sem reagrupamento, reserva nas dezenas, interpretar o resto, comparação entre potências e padrão passam por checagem antes da exibição.
+
+Impacto na aprendizagem:
+- reduz treino de habilidade errada;
+- aumenta coerência entre nome da etapa e tarefa entregue.
+
+2) Validar automaticamente propriedades matemáticas
+Onde foi aplicada:
+- script.js
+- getPlaceDigits
+- evaluateQuestionMathAndLearningContracts
+- enforceQuestionContracts
+
+O que muda:
+- o sistema valida carry/borrow e contratos conceituais essenciais antes de exibir a questão.
+
+Como funciona na prática:
+- se a etapa pedir sem reagrupamento, a questão não é entregue com carry escondido;
+- se a etapa pedir reserva nas dezenas, a questão é rejeitada se não houver essa propriedade.
+
+Impacto na aprendizagem:
+- evita ruído didático e protege a progressão do aluno.
+
+3) Diferenciar tipos de erro: cálculo, conceitual, leitura, estratégia
+Onde foi aplicada:
+- script.js
+- normalizePedagogicalErrorType
+- getLikelyErrorTypeForQuestion
+- buildErrorTypeSupportRoute
+- inferErrorDimension
+- getDistractorDiagnosis
+- buildCloudAttemptPayload
+- saveError
+
+O que muda:
+- os erros deixam de ser agrupados só como fluência/compreensão e passam a usar quatro categorias pedagógicas.
+
+Como funciona na prática:
+- erros por copiar número do enunciado ou responder o dado visível passam a leitura;
+- confundir operação, termo, quociente, resto ou potência passa a conceitual;
+- erro por caminho ruim ou perda de padrão passa a estratégia;
+- erros residuais ficam em cálculo.
+
+Impacto na aprendizagem:
+- feedback mais preciso;
+- diagnóstico mais útil para professor e retomada.
+
+4) Tornar o tutor orientado por tipo de erro
+Onde foi aplicada:
+- script.js
+- getAdaptiveLearningFlowMeta
+- buildQuestionTutorFlowHtml
+- showPedagogicalFeedback
+
+O que muda:
+- a camada de ajuda agora considera o tipo de erro e não apenas a quantidade de tentativas.
+
+Como funciona na prática:
+- erro de leitura força rota de releitura do que a pergunta pede;
+- erro conceitual força retorno à ideia central da habilidade;
+- erro de estratégia força troca de método;
+- erro de cálculo força conferência por etapas.
+
+Impacto na aprendizagem:
+- a ajuda fica menos genérica e mais alinhada ao motivo provável do erro.
+
+5) Exigir raciocínio em atividades conceituais
+Onde foi aplicada:
+- script.js
+- buildQuestionLearningContract
+- buildQuestionGradualExplanationHtml
+- buildQuestionTutorFlowHtml
+- buildQuestionAccessibilityNote
+- buildQuestionLearningMission
+- showPedagogicalFeedback
+
+O que muda:
+- questões conceituais passam a carregar exigência explícita de raciocínio;
+- explicações e tutor agora pedem conferência mental da ideia central antes da resposta.
+
+Como funciona na prática:
+- em etapas de comparação, padrão, contexto, resto, diferença, faltante e estimativa, o sistema adiciona pergunta-chave curta e missão pedagógica orientada a compreensão.
+
+Impacto na aprendizagem:
+- reduz acerto por tentativa;
+- reforça leitura da ideia matemática antes do clique.
+
+6) Fortalecer acessibilidade multimodal
+Onde foi aplicada:
+- script.js
+- buildQuestionAccessibilityNote
+- manutenção do painel inclusivo já existente
+
+O que muda:
+- sem alterar a interface, a camada de acessibilidade passa a sinalizar quando a questão exige pergunta-chave curta de compreensão além dos apoios já existentes.
+
+Como funciona na prática:
+- o painel inclusivo continua com leitura simplificada, apoio visual descrito, passo a passo, digitação e leitura em voz;
+- agora essas camadas ficam mais alinhadas ao contrato cognitivo da questão.
+
+Impacto na aprendizagem:
+- melhora acesso sem poluir a tela.
+
+7) Ajustar gamificação para premiar compreensão
+Onde foi aplicada:
+- script.js
+- handleAnswer
+
+O que muda:
+- acertos independentes em questões de compreensão podem render bônus específico de compreensão.
+
+Como funciona na prática:
+- em modo estudo, se a questão exigir raciocínio, for de compreensão e o acerto vier de primeira sem rota guiada, o sistema concede bônus adicional.
+
+Impacto na aprendizagem:
+- o jogo deixa de premiar só velocidade/acerto bruto;
+- passa a valorizar compreensão independente.
+
+8) Transformar diagnóstico do professor em recomendações práticas
+Onde foi aplicada:
+- script.js
+- buildCloudAttemptPayload
+- saveError
+- integração com getTeacherRetakeErrorFocus
+
+O que muda:
+- cada erro salvo pode levar junto recomendação prática de retomada;
+- tentativas enviadas para relatório também carregam recomendação do professor.
+
+Como funciona na prática:
+- o sistema registra não só o erro, mas a ação docente sugerida para retomada.
+
+Impacto na aprendizagem:
+- aproxima diagnóstico de intervenção real.
+
+VERIFICAÇÃO FINAL
+- O sistema agora está mais focado em compreensão ou ainda em acerto?
+Resposta: mais focado em compreensão, embora continue preservando o fluxo baseado em resposta.
+
+- Houve mudanças desnecessárias?
+Resposta: não foram aplicadas mudanças de layout, navegação ou home sem necessidade.
+
+- A home foi alterada? Se sim, era realmente inevitável?
+Resposta: a home não foi alterada estruturalmente. Não era inevitável mexer nela.

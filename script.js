@@ -646,7 +646,7 @@ function showPedagogicalFeedback(isCorrect, operation, q, selectedValue, opts = 
             if (flow.attempts === 0 && flow.supportMode === 'normal') successMsg += ' Boa leitura da estratégia.';
             else successMsg += ' Você reorganizou o raciocínio e conseguiu.';
             if (domainTxt) successMsg += ` Domínio atual: ${domainTxt}.`;
-            if (challenge) successMsg += ` Próximo desafio: ${challenge}`;
+            if (challenge) successMsg += ` Desafio extra: ${challenge}`;
         }
         showFeedbackControlled(successMsg.trim(), 'success', isRapid ? 2500 : 5200);
         return;
@@ -5794,6 +5794,8 @@ function buildCloudAttemptPayload(question, selectedAnswer, isCorrect, extra = {
             selectedDistractorCode: String(diagnosis?.code || ''),
             selectedDistractorLabel: String(diagnosis?.label || ''),
             selectedDistractorFeedback: String(diagnosis?.feedback || ''),
+            selectedErrorDimension: String(diagnosis?.errorDimension || inferErrorDimension(q, diagnosis) || ''),
+            teacherRecommendation: String(getTeacherRetakeErrorFocus({ code: diagnosis?.code, label: diagnosis?.label, operation: String(q.operacao || ''), stageLabel: String(q.stageLabel || q.masteryStageLabel || '') }).teacherMove || ''),
             appVersion: String(document.body.getAttribute('data-version') || '')
         }
     };
@@ -10344,21 +10346,28 @@ function getAdaptiveLearningFlowMeta(q, opts = {}) {
         const attempts = Math.max(0, Number((opts.attempts ?? gameState.attemptsThisQuestion) || 0));
         const stageInsight = getCurrentQuestionStageDiagnostic(q);
         const supportMode = normalizeAdaptiveSupportMode(q?.supportMode || stageInsight?.domain?.recommendedSupport || gameState.operationTrail?.supportMode || 'normal');
+        const explicitErrorType = String(opts.errorType || q?.lastErrorDimension || gameState.__lastErrorMeta?.errorDimension || stageInsight?.errorDimension || '').trim();
+        const errorType = normalizePedagogicalErrorType(explicitErrorType || getLikelyErrorTypeForQuestion(q));
         let tier = 1;
         if (supportMode === 'guided' || attempts >= 1) tier = 2;
         if (supportMode === 'very_guided' || attempts >= 2) tier = 3;
         if (stageInsight?.domain?.due && tier < 2) tier = 2;
         if (stageInsight?.domain?.stateCode === 'fragile' && attempts >= 1) tier = 3;
+        if ((errorType === 'Leitura' || errorType === 'Conceitual') && tier < 2) tier = 2;
+        if ((errorType === 'Estratégia' || errorType === 'Conceitual') && attempts >= 1 && tier < 3) tier = 3;
+        const tutorRoute = buildErrorTypeSupportRoute(errorType, q, null);
         return {
             attempts,
             supportMode,
             tier,
             tierLabel: tier === 1 ? 'Dica rápida' : (tier === 2 ? 'Explicação guiada' : 'Explicação completa'),
             domainState: String(stageInsight?.domain?.stateLabel || ''),
-            dueReview: !!stageInsight?.domain?.due
+            dueReview: !!stageInsight?.domain?.due,
+            errorType,
+            tutorRoute
         };
     } catch (_) {
-        return { attempts: 0, supportMode: 'normal', tier: 1, tierLabel: 'Dica rápida', domainState: '', dueReview: false };
+        return { attempts: 0, supportMode: 'normal', tier: 1, tierLabel: 'Dica rápida', domainState: '', dueReview: false, errorType: 'Cálculo', tutorRoute: '' };
     }
 }
 function getSkillStabilityMeta(record, masteryThreshold = 0.8) {
@@ -10408,7 +10417,12 @@ function getDistractorDiagnosis(question, selectedAnswer) {
         const num2 = Number(q.num2);
         const knownResult = parseTrailingResult(qText);
         if (!Number.isFinite(selected) || !Number.isFinite(answer) || selected === answer) return null;
-        const make = (code, errLabel, feedback) => ({ code, label: errLabel, feedback });
+        const make = (code, errLabel, feedback) => {
+            const draft = { code, label: errLabel, feedback };
+            draft.errorDimension = inferErrorDimension(q, draft);
+            draft.supportRoute = buildErrorTypeSupportRoute(draft.errorDimension, q, draft);
+            return draft;
+        };
         const directMeta = Array.isArray(q.distractorMeta)
             ? q.distractorMeta.find((it) => Number(it?.value) === selected)
             : null;
@@ -10966,12 +10980,15 @@ function buildAdaptiveSupportQuestion(operation, stageLabel, supportMode, stageI
             const pair = randSubtractionWithBorrow(hard ? 12 : 18, hard ? 30 : 54, 1, hard ? 9 : 18);
             return qSubtraction(pair[0], pair[1], stageLabel);
         }
-        if (label.includes('minuendo desconhecido') || label.includes('número que falta')) {
+        if (label.includes('resultado faltante')) {
+            return buildSubtractionMissingResultAuditQuestion(stageLabel, level || gameState.currentLevel || '');
+        }
+        if (label.includes('minuendo desconhecido')) {
             const diff = hard ? randomInt(2, 15) : randomInt(5, 40);
             const sub = hard ? randomInt(0, 9) : randomInt(3, 25);
             return qUnknownMinuend(diff, sub, stageLabel);
         }
-        if (label.includes('subtraendo desconhecido') || label.includes('resultado faltante') || label.includes('falta')) {
+        if (label.includes('subtraendo desconhecido') || label.includes('número que falta') || label.includes('falta')) {
             const minuend = hard ? randomInt(8, 20) : randomInt(15, 60);
             const diff = hard ? randomInt(1, minuend - 1) : randomInt(4, minuend - 2);
             return qUnknownSubtrahend(minuend, diff, stageLabel);
@@ -11003,6 +11020,18 @@ function buildAdaptiveSupportQuestion(operation, stageLabel, supportMode, stageI
             const quotient = hard ? randomInt(2, 5) : randomInt(2, 8);
             return qDivisionFindDividend(divisor, quotient, stageLabel);
         }
+        if (label.includes('interpretar o resto')) {
+            return buildDivisionRemainderInterpretationAuditQuestion(stageLabel, level || gameState.currentLevel || '');
+        }
+        if (label.includes('escolher entre quociente e resto')) {
+            return buildDivisionQuotientOrRemainderChoiceAuditQuestion(stageLabel, level || gameState.currentLevel || '');
+        }
+        if (label.includes('comparar divisão exata e não exata')) {
+            return buildDivisionExactVsNonExactCompareQuestion(stageLabel, level || gameState.currentLevel || '');
+        }
+        if (label.includes('contextual') || label.includes('contexto')) {
+            return buildDivisionContextAuditQuestion(stageLabel, level || gameState.currentLevel || '');
+        }
         if (label.includes('resto')) {
             const divisor = randFrom(hard ? [2,3,4] : [2,3,4,5]);
             const quotient = hard ? randomInt(2, 5) : randomInt(2, 7);
@@ -11026,6 +11055,9 @@ function buildAdaptiveSupportQuestion(operation, stageLabel, supportMode, stageI
         if (code.includes('power_as_multiplication') || code.includes('power_as_sum') || code.includes('power_exponent')) {
             return qPowerExpanded(randFrom(hard ? [2,3] : [2,3,4]), hard ? 2 : randFrom([2,3]), stageLabel);
         }
+        if (label.includes('comparar valores de potências') || label.includes('comparação entre potências')) return buildPowerCompareAuditQuestion(stageLabel, level || gameState.currentLevel || '');
+        if (label.includes('relacionar potência e padrão')) return buildPowerPatternAuditQuestion(stageLabel, level || gameState.currentLevel || '');
+        if (label.includes('valor faltante em potência')) return buildPowerMissingBaseAuditQuestion(stageLabel);
         if (label.includes('expoente 0')) return qPower(randFrom([2,3,4,5]), 0, stageLabel);
         if (label.includes('expoente 1')) return qPower(randFrom([2,3,4,5,6]), 1, stageLabel);
         if (label.includes('cubo')) return qPower(randFrom(hard ? [2,3] : [2,3,4]), 3, stageLabel);
@@ -11051,6 +11083,7 @@ function buildAdaptiveSupportQuestion(operation, stageLabel, supportMode, stageI
         return qRoot(randIntFromList(hard ? [4,9,16,25,36] : [4,9,16,25,36,49,64,81,100]), stageLabel);
     }
     if (operation === 'multiplication') {
+        if (label.includes('padrões das tabuadas 2 e 5')) return buildMultiplicationPatternAuditQuestion(stageLabel, level || gameState.currentLevel || '');
         if (label.includes('grupos')) return qEqualGroups(hard ? randomInt(2,4) : randomInt(2,5), hard ? randomInt(2,3) : randomInt(2,5), stageLabel);
         if (label.includes('soma repetida')) return qRepeatedAddition(randFrom(hard ? [2,3] : [2,3,4,5]), hard ? randomInt(2,3) : randomInt(2,4), stageLabel);
         if (label.includes('dobro') || label.includes('triplo')) return qDoubleTriple(hard ? randomInt(2,6) : randomInt(2,9), label.includes('triplo') && !hard ? 3 : randFrom(hard ? [2] : [2,3]), stageLabel);
@@ -13738,6 +13771,102 @@ function randPerfectSquare(rootMin, rootMax) {
     const root = randomInt(rootMin, rootMax);
     return [root * root, root];
 }
+function getPlaceDigits(n, places = 3) {
+    const safe = String(Math.max(0, Math.floor(Math.abs(Number(n) || 0)))).padStart(Math.max(1, Number(places) || 3), '0');
+    return safe.slice(-Math.max(1, Number(places) || 3)).split('').map((d) => Number(d));
+}
+function getCarryProfile(a, b, places = 3) {
+    const da = getPlaceDigits(a, places);
+    const db = getPlaceDigits(b, places);
+    const profile = Array.from({ length: da.length }, () => false);
+    let carry = 0;
+    for (let i = da.length - 1; i >= 0; i--) {
+        const sum = da[i] + db[i] + carry;
+        profile[i] = sum >= 10;
+        carry = profile[i] ? 1 : 0;
+    }
+    return profile;
+}
+function hasNoCarryAnywhere(a, b, places = 3) {
+    return getCarryProfile(a, b, places).every((it) => !it);
+}
+function hasCarryAtUnitsOnly(a, b, places = 3) {
+    const profile = getCarryProfile(a, b, places);
+    const unitsIdx = profile.length - 1;
+    if (unitsIdx < 0) return false;
+    return profile[unitsIdx] && profile.slice(0, unitsIdx).every((it) => !it);
+}
+function hasCarryAtTensOnly(a, b, places = 3) {
+    const profile = getCarryProfile(a, b, places);
+    if (profile.length < 2) return false;
+    const unitsIdx = profile.length - 1;
+    const tensIdx = profile.length - 2;
+    return !profile[unitsIdx] && profile[tensIdx] && profile.slice(0, tensIdx).every((it) => !it);
+}
+function getBorrowProfile(a, b, places = 3) {
+    const da = getPlaceDigits(a, places);
+    const db = getPlaceDigits(b, places);
+    const profile = Array.from({ length: da.length }, () => false);
+    let borrow = 0;
+    for (let i = da.length - 1; i >= 0; i--) {
+        const top = da[i] - borrow;
+        profile[i] = top < db[i];
+        borrow = profile[i] ? 1 : 0;
+    }
+    return profile;
+}
+function hasNoBorrowAnywhere(a, b, places = 3) {
+    return getBorrowProfile(a, b, places).every((it) => !it);
+}
+function hasBorrowAtUnitsOnly(a, b, places = 3) {
+    const profile = getBorrowProfile(a, b, places);
+    const unitsIdx = profile.length - 1;
+    if (unitsIdx < 0) return false;
+    return profile[unitsIdx] && profile.slice(0, unitsIdx).every((it) => !it);
+}
+function hasBorrowAtTensOnly(a, b, places = 3) {
+    const profile = getBorrowProfile(a, b, places);
+    if (profile.length < 2) return false;
+    const unitsIdx = profile.length - 1;
+    const tensIdx = profile.length - 2;
+    return !profile[unitsIdx] && profile[tensIdx] && profile.slice(0, tensIdx).every((it) => !it);
+}
+function pickStructuredPair(buildPair, predicate, attempts = 800) {
+    for (let i = 0; i < attempts; i++) {
+        const pair = buildPair();
+        if (!Array.isArray(pair) || pair.length < 2) continue;
+        const a = Number(pair[0]);
+        const b = Number(pair[1]);
+        if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+        if (predicate(a, b)) return [a, b];
+    }
+    return Array.isArray(buildPair()) ? buildPair() : [0, 0];
+}
+function shuffleNumericOptions(list, limit = 4) {
+    const unique = [];
+    const seen = new Set();
+    (Array.isArray(list) ? list : []).forEach((value) => {
+        const n = Math.round(Number(value));
+        if (!Number.isFinite(n) || seen.has(n)) return;
+        seen.add(n);
+        unique.push(n);
+    });
+    for (let i = unique.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [unique[i], unique[j]] = [unique[j], unique[i]];
+    }
+    return unique.slice(0, Math.max(1, Number(limit) || 4));
+}
+function applyCustomQuestionOptions(question, options) {
+    if (!question || typeof question !== 'object') return question;
+    const resolved = shuffleNumericOptions(options, 4);
+    if (resolved.length >= 2) {
+        question.options = resolved.slice();
+        question.voiceOptions = resolved.slice();
+        question.distractorMeta = [];
+    }
+    return question;
+}
 function makeStage(label, count, gen) {
     return { label, count, gen };
 }
@@ -14004,6 +14133,127 @@ function buildPowerMissingBaseAuditQuestion(label) {
     const q = qPowerFindBase(base ** exp, exp, label);
     q.auditStageVariant = 'power-missing-base';
     return refreshQuestionDistractors(q, { strategyFamily: 'inverse-power', studyDistractorsOnly: !gameState.isRapidMode });
+}
+function buildSubtractionMissingResultAuditQuestion(label, level = gameState.currentLevel || '') {
+    const band = getAuditLevelBand(level);
+    const preset = ({
+        apprentice: { a: [4, 18], b: [1, 9] },
+        easy: { a: [12, 60], b: [2, 25] },
+        medium: { a: [120, 480], b: [15, 170] },
+        advanced: { a: [250, 1400], b: [30, 450] }
+    })[band] || { a: [20, 120], b: [3, 35] };
+    const minuend = randomInt(preset.a[0], preset.a[1]);
+    const sub = randomInt(preset.b[0], Math.min(preset.b[1], Math.max(preset.b[0], minuend - 1)));
+    const answer = minuend - sub;
+    const q = buildQuestionPayload('subtraction', minuend, sub, answer, `Qual é o resultado de ${minuend} - ${sub}`, `qual é o resultado de ${minuend} menos ${sub}`, label);
+    q.auditStageVariant = 'subtraction-missing-result';
+    return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
+}
+function buildDivisionRemainderInterpretationAuditQuestion(label, level = gameState.currentLevel || '') {
+    const preset = pickAuditCollection(level, {
+        apprentice: { divisor: [2, 4], quotient: [2, 5] },
+        easy: { divisor: [3, 6], quotient: [3, 8] },
+        medium: { divisor: [4, 8], quotient: [4, 12] },
+        advanced: { divisor: [5, 10], quotient: [5, 18] }
+    });
+    const divisor = randomInt(preset.divisor[0], preset.divisor[1]);
+    const quotient = randomInt(preset.quotient[0], preset.quotient[1]);
+    const remainder = randomInt(1, Math.max(1, divisor - 1));
+    const total = divisor * quotient + remainder;
+    const pair = pickAuditPair([
+        ['Lia', 'figurinhas', 'Quantas'],
+        ['Noah', 'peças', 'Quantas'],
+        ['Iris', 'balas', 'Quantas'],
+        ['Ravi', 'cartas', 'Quantas']
+    ]);
+    const q = buildQuestionPayload('division', total, divisor, remainder, `${pair.name} separou ${total} ${pair.item} em grupos de ${divisor}. ${pair.quantWord} ${pair.item} sobram sem completar outro grupo`, `${pair.name} separou ${total} ${pair.item} em grupos de ${divisor}. ${pair.quantWord.toLowerCase()} ${pair.item} sobram sem completar outro grupo`, label);
+    q.auditStageVariant = 'division-remainder-interpretation';
+    return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
+}
+function buildDivisionQuotientOrRemainderChoiceAuditQuestion(label, level = gameState.currentLevel || '') {
+    const preset = pickAuditCollection(level, {
+        apprentice: { divisor: [2, 4], quotient: [2, 5] },
+        easy: { divisor: [3, 6], quotient: [3, 8] },
+        medium: { divisor: [4, 8], quotient: [4, 12] },
+        advanced: { divisor: [5, 10], quotient: [5, 18] }
+    });
+    const divisor = randomInt(preset.divisor[0], preset.divisor[1]);
+    const quotient = randomInt(preset.quotient[0], preset.quotient[1]);
+    const askRemainder = Math.random() < 0.5;
+    const remainder = askRemainder ? randomInt(1, Math.max(1, divisor - 1)) : 0;
+    const total = divisor * quotient + remainder;
+    const pair = pickAuditPair([
+        ['Ana', 'adesivos', 'Quantos'],
+        ['Bia', 'livros', 'Quantos'],
+        ['Caio', 'pontos', 'Quantos'],
+        ['Davi', 'cartões', 'Quantos']
+    ]);
+    const question = askRemainder
+        ? `${pair.name} organizou ${total} ${pair.item} em caixas com ${divisor} em cada uma. ${pair.quantWord} ${pair.item} sobram sem completar outra caixa`
+        : `${pair.name} organizou ${total} ${pair.item} em caixas com ${divisor} em cada uma. Quantas caixas completas consegue montar`;
+    const voice = askRemainder
+        ? `${pair.name} organizou ${total} ${pair.item} em caixas com ${divisor} em cada uma. ${pair.quantWord.toLowerCase()} ${pair.item} sobram sem completar outra caixa`
+        : `${pair.name} organizou ${total} ${pair.item} em caixas com ${divisor} em cada uma. Quantas caixas completas consegue montar`;
+    const q = buildQuestionPayload('division', total, divisor, askRemainder ? remainder : quotient, question, voice, label);
+    q.auditStageVariant = askRemainder ? 'division-choice-remainder' : 'division-choice-quotient';
+    return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
+}
+function buildDivisionExactVsNonExactCompareQuestion(label, level = gameState.currentLevel || '') {
+    const preset = pickAuditCollection(level, {
+        apprentice: { divisor: [2, 4], quotient: [2, 5] },
+        easy: { divisor: [3, 6], quotient: [3, 8] },
+        medium: { divisor: [4, 8], quotient: [4, 12] },
+        advanced: { divisor: [5, 10], quotient: [5, 18] }
+    });
+    const divisor = randomInt(preset.divisor[0], preset.divisor[1]);
+    const quotient = randomInt(preset.quotient[0], preset.quotient[1]);
+    const exact = divisor * quotient;
+    const remainder = randomInt(1, Math.max(1, divisor - 1));
+    const nonExact = exact + remainder;
+    const q = buildQuestionPayload('division', exact, divisor, exact, `Compare ${exact} ÷ ${divisor} e ${nonExact} ÷ ${divisor}. Qual divisão é exata`, `compare ${exact} dividido por ${divisor} e ${nonExact} dividido por ${divisor}. Qual divisão é exata`, label);
+    q.auditStageVariant = 'division-exact-vs-nonexact';
+    applyCustomQuestionOptions(q, [exact, nonExact, quotient, remainder]);
+    return q;
+}
+function buildPowerCompareAuditQuestion(label, level = gameState.currentLevel || '') {
+    const pairs = [
+        [2, 3, 3, 2],
+        [2, 4, 4, 2],
+        [3, 3, 2, 5],
+        [5, 2, 2, 5],
+        [2, 5, 3, 3],
+        [4, 3, 2, 6]
+    ];
+    const [baseA, expA, baseB, expB] = randFrom(pairs);
+    const valueA = baseA ** expA;
+    const valueB = baseB ** expB;
+    const askGreater = Math.random() < 0.5;
+    const answer = askGreater ? Math.max(valueA, valueB) : Math.min(valueA, valueB);
+    const prompt = `Compare ${baseA}${toSuperscript(expA)} e ${baseB}${toSuperscript(expB)}. Qual é o ${askGreater ? 'maior' : 'menor'} valor`;
+    const q = buildQuestionPayload('potenciacao', baseA, expA, answer, prompt, prompt.toLowerCase(), label);
+    q.auditStageVariant = 'power-compare';
+    applyCustomQuestionOptions(q, [valueA, valueB, answer + (askGreater ? -1 : 1), answer + (askGreater ? 4 : -4)]);
+    return q;
+}
+function buildPowerPatternAuditQuestion(label, level = gameState.currentLevel || '') {
+    const base = randFrom([2, 3, 4, 5]);
+    const startExp = randFrom([2, 3]);
+    const values = [base ** startExp, base ** (startExp + 1), base ** (startExp + 2)];
+    const answer = base ** (startExp + 3);
+    const prompt = `Observe a sequência ${values.join(', ')}. Ela segue potências de base ${base}. Qual é o próximo valor`;
+    const q = buildQuestionPayload('potenciacao', base, startExp, answer, prompt, prompt.toLowerCase(), label);
+    q.auditStageVariant = 'power-pattern';
+    return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
+}
+function buildMultiplicationPatternAuditQuestion(label, level = gameState.currentLevel || '') {
+    const base = randFrom([2, 5]);
+    const start = randFrom([1, 2, 3]);
+    const seq = [base * start, base * (start + 1), base * (start + 2)];
+    const answer = base * (start + 3);
+    const prompt = `Na tabuada do ${base}, a sequência é ${seq.join(', ')}, __. Qual número falta`;
+    const q = buildQuestionPayload('multiplication', base, start + 3, answer, prompt, prompt.toLowerCase(), label);
+    q.auditStageVariant = 'multiplication-pattern';
+    return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
 }
 function buildAdditionContextAuditQuestion(label, level = gameState.currentLevel || '') {
     const preset = pickAuditCollection(level, {
@@ -14279,8 +14529,9 @@ function getQuestionBankAuditCandidateBuilders(operation, level, stageLabel, fal
         if (has('contexto', 'situações-problema')) add(() => buildSubtractionContextAuditQuestion(stageLabel, level));
         if (has('diferença', 'interpretação da diferença')) add(() => buildSubtractionDifferenceAuditQuestion(stageLabel, level));
         if (has('estratégias mentais')) add(() => buildSubtractionMentalAuditQuestion(stageLabel, level));
+        if (has('resultado faltante')) add(() => buildSubtractionMissingResultAuditQuestion(stageLabel, level));
         if (has('quanto falta')) add(() => buildSubtractionUnknownSubtrahendAuditQuestion(stageLabel, level));
-        if (has('número inicial', 'minuendo desconhecido', 'resultado faltante')) add(() => buildSubtractionUnknownMinuendAuditQuestion(stageLabel, level));
+        if (has('número inicial', 'minuendo desconhecido')) add(() => buildSubtractionUnknownMinuendAuditQuestion(stageLabel, level));
         if (has('subtraendo desconhecido', 'número que falta')) add(() => buildSubtractionUnknownSubtrahendAuditQuestion(stageLabel, level));
     }
     if (operation === 'multiplication') {
@@ -14288,21 +14539,29 @@ function getQuestionBankAuditCandidateBuilders(operation, level, stageLabel, fal
         if (has('contextos multiplicativos')) add(() => buildMultiplicationContextAuditQuestion(stageLabel, level));
         if (has('dobrar para multiplicar')) add(() => buildMultiplicationDoublingAuditQuestion(stageLabel));
         if (has('distributiva')) add(() => buildMultiplicationDistributiveAuditQuestion(stageLabel));
+        if (has('padrões das tabuadas 2 e 5', 'tabuadas 2 e 5')) add(() => buildMultiplicationPatternAuditQuestion(stageLabel, level));
     }
     if (operation === 'division') {
         if (has('relação com multiplicação', 'relação divisão', 'múltiplos e divisores', 'conferência pela multiplicação')) {
             add(() => buildDivisionRelationAuditQuestion(stageLabel));
         }
-        if (has('contexto')) add(() => buildDivisionContextAuditQuestion(stageLabel, level));
-        if (has('resto', 'escolher entre quociente e resto')) add(() => buildDivisionRemainderAuditQuestion(stageLabel, level));
+        if (has('contexto', 'contextual')) add(() => buildDivisionContextAuditQuestion(stageLabel, level));
+        if (has('interpretar o resto')) add(() => buildDivisionRemainderInterpretationAuditQuestion(stageLabel, level));
+        if (has('escolher entre quociente e resto')) add(() => buildDivisionQuotientOrRemainderChoiceAuditQuestion(stageLabel, level));
+        if (has('resto')) add(() => buildDivisionRemainderAuditQuestion(stageLabel, level));
         if (has('estimativa do quociente')) add(() => buildDivisionEstimateAuditQuestion(stageLabel));
-        if (has('erro comum', 'erros comuns', 'comparar divisão exata e não exata')) add(() => buildDivisionErrorAuditQuestion(stageLabel, level));
+        if (has('comparar divisão exata e não exata')) add(() => buildDivisionExactVsNonExactCompareQuestion(stageLabel, level));
+        if (has('erro comum', 'erros comuns')) add(() => buildDivisionErrorAuditQuestion(stageLabel, level));
     }
     if (operation === 'potenciacao') {
-        if (has('comparar potência e multiplicação', 'comparar potência e produto', 'comparar valores de potências', 'reconhecer escrita expandida', 'potência expandida', 'potência em expressão curta')) {
+        if (has('comparar valores de potências', 'comparação entre potências')) {
+            add(() => buildPowerCompareAuditQuestion(stageLabel, level));
+        }
+        if (has('comparar potência e multiplicação', 'comparar potência e produto', 'reconhecer escrita expandida', 'potência expandida', 'potência em expressão curta')) {
             add(() => buildPowerExpandedAuditQuestion(stageLabel));
         }
-        if (has('completar potência', 'valor faltante em potência')) {
+        if (has('relacionar potência e padrão')) add(() => buildPowerPatternAuditQuestion(stageLabel, level));
+        if (has('completar potência', 'valor faltante em potência', 'valor faltante em potência simples')) {
             add(() => buildPowerMissingBaseAuditQuestion(stageLabel));
         }
         if (has('erro comum')) add(() => buildPowerErrorAuditQuestion(stageLabel));
@@ -14429,7 +14688,7 @@ function getOperationTrailStages(operation, level) {
                 makeStage('Grupos iguais até 5', 10, () => qEqualGroups(randomInt(2,5), randomInt(2,5), 'Grupos iguais até 5')),
                 makeStage('Soma repetida até 5', 10, () => qRepeatedAddition(randFrom([2,3,4,5]), randomInt(2,5), 'Soma repetida até 5')),
                 makeStage('Comutatividade', 10, () => { const a=randFrom([2,3,4,5]); const b=randomInt(1,10); return Math.random() < 0.5 ? qMultiplicationBasic(a, b, 'Comutatividade') : qMultiplicationBasic(b, a, 'Comutatividade'); }),
-                makeStage('Padrões das tabuadas 2 e 5', 10, () => qMultiplicationBasic(randFrom([2,5]), randomInt(1,10), 'Padrões das tabuadas 2 e 5')),
+                makeStage('Padrões das tabuadas 2 e 5', 10, () => buildMultiplicationPatternAuditQuestion('Padrões das tabuadas 2 e 5', gameState.currentLevel || 'easy')),
                 makeStage('Revisão mista do nível fácil', 10, () => { const pool=[
                     () => qMultiplicationBasic(randFrom([1,2,3,4,5]), randomInt(1,10), 'Revisão mista do nível fácil'),
                     () => qEqualGroups(randomInt(2,5), randomInt(2,5), 'Revisão mista do nível fácil'),
@@ -14496,8 +14755,8 @@ function getOperationTrailStages(operation, level) {
                 makeStage('Domínio final', 5, () => { const pool=[() => { const a=randomInt(0,12), b=randomInt(0,12); return qAddition(a,b,'Domínio final'); }, () => { const total=randomInt(8,20), known=randomInt(1,total-1); return qAdditionMissing(total, known, 'Domínio final', Math.random()<0.5); }, () => { const a=randomInt(1,6), b=randomInt(1,6), c=randomInt(1,6); return qAddition3(a,b,c,'Domínio final'); }]; return randFrom(pool)(); })
             ],
             easy: [
-                makeStage('Somar até 10 sem reagrupamento', 10, () => { const a=randomInt(0,9), b=randomInt(0,10-a); return qAddition(a,b,'Somar até 10 sem reagrupamento'); }),
-                makeStage('Somar até 20 sem reagrupamento', 10, () => { const a=randomInt(0,19), b=randomInt(0,20-a); return qAddition(a,b,'Somar até 20 sem reagrupamento'); }),
+                makeStage('Somar até 10 sem reagrupamento', 10, () => { const a=randomInt(0,9), b=randomInt(0,9-a); return qAddition(a,b,'Somar até 10 sem reagrupamento'); }),
+                makeStage('Somar até 20 sem reagrupamento', 10, () => { let a,b; do { a=randomInt(0,19); b=randomInt(0,20-a); } while (((a % 10) + (b % 10)) >= 10); return qAddition(a,b,'Somar até 20 sem reagrupamento'); }),
                 makeStage('Adição com dezenas exatas', 10, () => { const a=randFrom([10,20,30,40,50]), b=randFrom([10,20,30,40]); return qAddition(a,b,'Adição com dezenas exatas'); }),
                 makeStage('2 dígitos + 1 dígito sem reagrupamento', 10, () => { const [a,b]=randAdditionNoCarry(10,89,1,9); return qAddition(a,b,'2 dígitos + 1 dígito sem reagrupamento'); }),
                 makeStage('2 dígitos + 1 dígito com reagrupamento', 10, () => { const [a,b]=randAdditionWithCarry(10,89,1,9); return qAddition(a,b,'2 dígitos + 1 dígito com reagrupamento'); }),
@@ -14508,9 +14767,9 @@ function getOperationTrailStages(operation, level) {
                 makeStage('Domínio final do nível', 10, () => { const pool=[() => { const [a,b]=randAdditionWithCarry(15,79,5,49); return qAddition(a,b,'Domínio final do nível'); }, () => { const [a,b]=randAdditionNoCarry(10,89,1,9); return qAddition(a,b,'Domínio final do nível'); }, () => { const a=randomInt(1,9), b=randomInt(1,9), c=randomInt(1,9); return qAddition3(a,b,c,'Domínio final do nível'); }]; return randFrom(pool)(); })
             ],
             medium: [
-                makeStage('Centenas sem reagrupamento', 10, () => { const [a,b]=randAdditionNoCarry(100,499,100,299); return qAddition(a,b,'Centenas sem reagrupamento'); }),
+                makeStage('Centenas sem reagrupamento', 10, () => { const [a,b]=pickStructuredPair(() => [randomInt(100,499), randomInt(100,299)], (x,y) => hasNoCarryAnywhere(x,y,3)); return qAddition(a,b,'Centenas sem reagrupamento'); }),
                 makeStage('Centenas com reagrupamento nas unidades', 10, () => { const tensA=randFrom([100,120,130,140,210,320]); const unitA=randomInt(1,8); const unitB=randomInt(10-unitA,9); const a=tensA+unitA; const b=randFrom([10,20,30,40,110,120])+unitB; return qAddition(a,b,'Centenas com reagrupamento nas unidades'); }),
-                makeStage('Centenas com reagrupamento nas dezenas', 10, () => { const hundredsA=randFrom([100,200,300,400,500]); const hundredsB=randFrom([100,200,300]); const tensA=randFrom([20,30,40,50]); const tensB=randFrom([50,60,70]); const a=hundredsA+tensA+randomInt(0,4); const b=hundredsB+tensB+randomInt(0,4); return qAddition(a,b,'Centenas com reagrupamento nas dezenas'); }),
+                makeStage('Centenas com reagrupamento nas dezenas', 10, () => { const [a,b]=pickStructuredPair(() => { const hundredsA=randFrom([100,200,300,400,500]); const hundredsB=randFrom([100,200,300]); const tensA=randFrom([20,30,40,50]); const tensB=randFrom([50,60,70]); return [hundredsA+tensA+randomInt(0,4), hundredsB+tensB+randomInt(0,4)]; }, (x,y) => hasCarryAtTensOnly(x,y,3)); return qAddition(a,b,'Centenas com reagrupamento nas dezenas'); }),
                 makeStage('Soma com 3 parcelas e reagrupamento', 10, () => { const a=randomInt(15,49), b=randomInt(16,39), c=randomInt(11,29); return qAddition3(a,b,c,'Soma com 3 parcelas e reagrupamento'); }),
                 makeStage('Completar parcela faltante', 10, () => { const total=randomInt(120,450), known=randomInt(20,total-20); return qAdditionMissing(total, known, 'Completar parcela faltante', Math.random()<0.5); }),
                 makeStage('Adição por decomposição', 10, () => { const base=randFrom([100,200,300,400]); const tens=randFrom([20,30,40,50]); const units=randomInt(1,9); const a=base+tens+units; const b=randFrom([10,20,30,40])+randomInt(1,9); return qAddition(a,b,'Adição por decomposição'); }),
@@ -14538,7 +14797,7 @@ function getOperationTrailStages(operation, level) {
                 makeStage('Tirar até 10', 5, () => { const a=randomInt(2,10), b=randomInt(0,a); return qSubtraction(a,b,'Tirar até 10'); }),
                 makeStage('Diferenças pequenas', 5, () => { const a=randomInt(3,10), b=randomInt(0,a-1); return qSubtraction(a,b,'Diferenças pequenas'); }),
                 makeStage('Quanto falta para chegar', 5, () => { const total=randomInt(4,10), diff=randomInt(1,total); return qUnknownSubtrahend(total, diff, 'Quanto falta para chegar'); }),
-                makeStage('Sem reserva até 20', 5, () => { const b=randomInt(1,9); const a=randomInt(b,19); if ((a % 10) < (b % 10)) return qSubtraction(a + (b % 10), b, 'Sem reserva até 20'); return qSubtraction(a,b,'Sem reserva até 20'); }),
+                makeStage('Sem reserva até 20', 5, () => { let a,b; do { a=randomInt(1,20); b=randomInt(0,a); } while ((a % 10) < (b % 10)); return qSubtraction(a,b,'Sem reserva até 20'); }),
                 makeStage('Descobrir o número inicial', 5, () => { const diff=randomInt(1,10), sub=randomInt(0,9); return qUnknownMinuend(diff, sub, 'Descobrir o número inicial'); }),
                 makeStage('Dezenas exatas', 5, () => { const a=randFrom([10,20,30,40,50]); const b=randFrom([0,10,20]); return qSubtraction(a, Math.min(a,b), 'Dezenas exatas'); }),
                 makeStage('Subtração em contexto simples', 5, () => { const a=randomInt(8,20), b=randomInt(1,Math.min(9,a)); return qSubtraction(a,b,'Subtração em contexto simples'); }),
@@ -14546,8 +14805,8 @@ function getOperationTrailStages(operation, level) {
                 makeStage('Domínio final', 5, () => { const pool=[() => { const a=randomInt(8,20), b=randomInt(0,a); return qSubtraction(a,b,'Domínio final'); }, () => { const total=randomInt(8,20), diff=randomInt(1,total); return qUnknownSubtrahend(total, diff, 'Domínio final'); }, () => { const diff=randomInt(1,12), sub=randomInt(0,9); return qUnknownMinuend(diff, sub, 'Domínio final'); }]; return randFrom(pool)(); })
             ],
             easy: [
-                makeStage('Subtração até 10 sem reserva', 10, () => { const a=randomInt(1,10), b=randomInt(0,a); return qSubtraction(a,b,'Subtração até 10 sem reserva'); }),
-                makeStage('Subtração até 20 sem reserva', 10, () => { const a=randomInt(10,20), b=randomInt(0,a); return qSubtraction(a,b,'Subtração até 20 sem reserva'); }),
+                makeStage('Subtração até 10 sem reserva', 10, () => { let a,b; do { a=randomInt(1,10); b=randomInt(0,a); } while ((a % 10) < (b % 10)); return qSubtraction(a,b,'Subtração até 10 sem reserva'); }),
+                makeStage('Subtração até 20 sem reserva', 10, () => { let a,b; do { a=randomInt(10,20); b=randomInt(0,a); } while ((a % 10) < (b % 10)); return qSubtraction(a,b,'Subtração até 20 sem reserva'); }),
                 makeStage('Dezenas exatas', 10, () => { const a=randFrom([20,30,40,50,60]), b=randFrom([10,20,30,40]); return qSubtraction(Math.max(a,b), Math.min(a,b), 'Dezenas exatas'); }),
                 makeStage('2 dígitos - 1 dígito sem reserva', 10, () => { const [a,b]=randSubtractionNoBorrow(20,89,1,9); return qSubtraction(a,b,'2 dígitos - 1 dígito sem reserva'); }),
                 makeStage('2 dígitos - 1 dígito com reserva', 10, () => { const [a,b]=randSubtractionWithBorrow(20,89,1,9); return qSubtraction(a,b,'2 dígitos - 1 dígito com reserva'); }),
@@ -14558,11 +14817,11 @@ function getOperationTrailStages(operation, level) {
                 makeStage('Domínio final do nível', 10, () => { const pool=[() => { const [a,b]=randSubtractionWithBorrow(20,99,1,49); return qSubtraction(a,b,'Domínio final do nível'); }, () => { const [a,b]=randSubtractionNoBorrow(20,99,1,49); return qSubtraction(a,b,'Domínio final do nível'); }]; return randFrom(pool)(); })
             ],
             medium: [
-                makeStage('Centenas sem reserva', 10, () => { const [a,b]=randSubtractionNoBorrow(200,799,100,499); return qSubtraction(a,b,'Centenas sem reserva'); }),
-                makeStage('Centenas com reserva nas unidades', 10, () => { const a=randFrom([210,320,430,540,650])+randomInt(0,4); const b=randFrom([101,112,123,134,145])+randomInt(5,9); return qSubtraction(Math.max(a,b+20), b, 'Centenas com reserva nas unidades'); }),
-                makeStage('Centenas com reserva nas dezenas', 10, () => { const a=randFrom([340,450,560,670,780])+randomInt(0,4); const b=randFrom([120,230,240,350,360])+randomInt(0,4); return qSubtraction(Math.max(a,b+40), b, 'Centenas com reserva nas dezenas'); }),
+                makeStage('Centenas sem reserva', 10, () => { const [a,b]=pickStructuredPair(() => [randomInt(200,799), randomInt(100,499)], (x,y) => x > y && hasNoBorrowAnywhere(x,y,3)); return qSubtraction(a,b,'Centenas sem reserva'); }),
+                makeStage('Centenas com reserva nas unidades', 10, () => { const [a,b]=pickStructuredPair(() => { const hundredsA=randFrom([200,300,400,500,600,700]); const hundredsB=randFrom([100,200,300,400,500]); const tensA=randFrom([20,30,40,50,60,70,80,90]); const tensB=randFrom([0,10,20,30,40,50,60,70,80]); const unitA=randomInt(0,8); const unitB=randomInt(unitA+1,9); return [hundredsA+tensA+unitA, Math.min(hundredsB+tensB+unitB, hundredsA+tensA+unitA-1)]; }, (x,y) => x > y && hasBorrowAtUnitsOnly(x,y,3)); return qSubtraction(a,b,'Centenas com reserva nas unidades'); }),
+                makeStage('Centenas com reserva nas dezenas', 10, () => { const [a,b]=pickStructuredPair(() => { const hundredsA=randFrom([300,400,500,600,700,800]); const hundredsB=randFrom([100,200,300,400,500,600]); const tensA=randFrom([0,10,20,30,40]); const tensB=randFrom([50,60,70,80,90]); const unitA=randomInt(0,9); const unitB=randomInt(0,unitA); return [hundredsA+tensA+unitA, Math.min(hundredsB+tensB+unitB, hundredsA+tensA+unitA-1)]; }, (x,y) => x > y && hasBorrowAtTensOnly(x,y,3)); return qSubtraction(a,b,'Centenas com reserva nas dezenas'); }),
                 makeStage('Reserva em mais de uma ordem', 10, () => { const a=randFrom([301,402,503,604,705,806]); const b=randFrom([178,189,297,398,409]); return qSubtraction(a,b,'Reserva em mais de uma ordem'); }),
-                makeStage('Descobrir o resultado faltante', 10, () => { const minuend=randomInt(120,450), answer=randomInt(20,minuend-20); return qUnknownSubtrahend(minuend, answer, 'Descobrir o resultado faltante'); }),
+                makeStage('Descobrir o resultado faltante', 10, () => buildSubtractionMissingResultAuditQuestion('Descobrir o resultado faltante', gameState.currentLevel || 'medium')),
                 makeStage('Descobrir o número que falta', 10, () => { const diff=randomInt(20,220), sub=randomInt(20,180); return qUnknownMinuend(diff, sub, 'Descobrir o número que falta'); }),
                 makeStage('Subtração por decomposição', 10, () => { const a=randomInt(220,699), b=randomInt(20,199); return qSubtraction(a,b,'Subtração por decomposição'); }),
                 makeStage('Situações-problema simples', 10, () => { const a=randomInt(150,600), b=randomInt(25,220); return qSubtraction(a,b,'Situações-problema simples'); }),
@@ -14571,7 +14830,7 @@ function getOperationTrailStages(operation, level) {
             ],
             advanced: [
                 makeStage('3 dígitos - 2 dígitos', 10, () => { const a=randomInt(250,999), b=randomInt(20,99); return qSubtraction(a,b,'3 dígitos - 2 dígitos'); }),
-                makeStage('3 dígitos - 3 dígitos com reserva', 10, () => { const a=randomInt(350,999), b=randomInt(120,799); return qSubtraction(Math.max(a,b+10), b, '3 dígitos - 3 dígitos com reserva'); }),
+                makeStage('3 dígitos - 3 dígitos com reserva', 10, () => { const [a,b]=pickStructuredPair(() => { const x=randomInt(350,999); return [x, randomInt(120, Math.min(799, x-1))]; }, (x,y) => x > y && !hasNoBorrowAnywhere(x,y,3)); return qSubtraction(a,b,'3 dígitos - 3 dígitos com reserva'); }),
                 makeStage('Reserva encadeada', 10, () => { const a=randFrom([401,502,603,704,805,906]); const b=randFrom([178,289,397,408,519]); return qSubtraction(a,b,'Reserva encadeada'); }),
                 makeStage('Diferença entre valores maiores', 10, () => { const a=randomInt(1000,4999), b=randomInt(120,2899); return qSubtraction(Math.max(a,b+100), b, 'Diferença entre valores maiores'); }),
                 makeStage('Minuendo desconhecido', 10, () => { const diff=randomInt(80,500), sub=randomInt(40,350); return qUnknownMinuend(diff, sub, 'Minuendo desconhecido'); }),
@@ -14614,16 +14873,16 @@ function getOperationTrailStages(operation, level) {
                 makeStage('Encontrar divisor simples', 10, () => { const divisor=randFrom([2,3,4,5,6,8,10]); const quotient=randomInt(2,15); return qDivisionFindDivisor(divisor*quotient, quotient, 'Encontrar divisor simples'); }),
                 makeStage('Encontrar dividendo simples', 10, () => { const divisor=randFrom([2,3,4,5,6,8,10]); const quotient=randomInt(2,15); return qDivisionFindDividend(divisor, quotient, 'Encontrar dividendo simples'); }),
                 makeStage('Leitura de divisão em contexto', 10, () => { const divisor=randFrom([3,4,5,6,7,8]); const quotient=randomInt(3,18); return qDivision(divisor*quotient, divisor, 'Leitura de divisão em contexto'); }),
-                makeStage('Comparar divisão exata e não exata', 10, () => { const divisor=randFrom([3,4,5,6,7]); const quotient=randomInt(2,12); const add=randFrom([0,1,2]); return add === 0 ? qDivision(divisor*quotient, divisor, 'Comparar divisão exata e não exata') : qDivisionRemainder(divisor*quotient + add, divisor, 'Comparar divisão exata e não exata'); }),
+                makeStage('Comparar divisão exata e não exata', 10, () => buildDivisionExactVsNonExactCompareQuestion('Comparar divisão exata e não exata', gameState.currentLevel || 'medium')),
                 makeStage('Introdução ao resto', 10, () => { const divisor=randFrom([3,4,5,6,7]); const quotient=randomInt(2,12); const rest=randomInt(1, divisor-1); return qDivisionRemainder(divisor*quotient + rest, divisor, 'Introdução ao resto'); }),
                 makeStage('Revisão mista do nível', 10, () => { const pool=[() => { const divisor=randFrom([3,4,5,6,7,8,9]); const quotient=randomInt(2,15); return qDivision(divisor*quotient, divisor, 'Revisão mista do nível'); }, () => { const divisor=randFrom([3,4,5,6,7]); const quotient=randomInt(2,12); const rest=randomInt(1, divisor-1); return qDivisionRemainder(divisor*quotient + rest, divisor, 'Revisão mista do nível'); }, () => { const divisor=randFrom([2,3,4,5,6,8,10]); const quotient=randomInt(2,15); return qDivisionFindDividend(divisor, quotient, 'Revisão mista do nível'); }]; return randFrom(pool)(); }),
                 makeStage('Domínio final do nível', 10, () => { const pool=[() => { const divisor=randFrom([3,4,5,6,7,8,9]); const quotient=randomInt(3,18); return qDivision(divisor*quotient, divisor, 'Domínio final do nível'); }, () => { const divisor=randFrom([3,4,5,6,7]); const quotient=randomInt(2,12); const rest=randomInt(1, divisor-1); return qDivisionRemainder(divisor*quotient + rest, divisor, 'Domínio final do nível'); }]; return randFrom(pool)(); })
             ],
             advanced: [
                 makeStage('Divisão com resto', 10, () => { const divisor=randFrom([4,5,6,7,8,9]); const quotient=randomInt(3,20); const rest=randomInt(1, divisor-1); return qDivisionRemainder(divisor*quotient + rest, divisor, 'Divisão com resto'); }),
-                makeStage('Interpretar o resto', 10, () => { const divisor=randFrom([3,4,5,6,7,8]); const quotient=randomInt(3,18); const rest=randomInt(1, divisor-1); return qDivisionRemainder(divisor*quotient + rest, divisor, 'Interpretar o resto'); }),
-                makeStage('Escolher entre quociente e resto', 10, () => { if (Math.random()<0.5) { const divisor=randFrom([4,5,6,7]); const quotient=randomInt(3,16); return qDivision(divisor*quotient, divisor, 'Escolher entre quociente e resto'); } const divisor=randFrom([4,5,6,7]); const quotient=randomInt(3,16); const rest=randomInt(1, divisor-1); return qDivisionRemainder(divisor*quotient + rest, divisor, 'Escolher entre quociente e resto'); }),
-                makeStage('Divisão em problema contextual', 10, () => { const divisor=randFrom([4,5,6,7,8,9]); const quotient=randomInt(4,20); return qDivision(divisor*quotient, divisor, 'Divisão em problema contextual'); }),
+                makeStage('Interpretar o resto', 10, () => buildDivisionRemainderInterpretationAuditQuestion('Interpretar o resto', gameState.currentLevel || 'medium')),
+                makeStage('Escolher entre quociente e resto', 10, () => buildDivisionQuotientOrRemainderChoiceAuditQuestion('Escolher entre quociente e resto', gameState.currentLevel || 'medium')),
+                makeStage('Divisão em problema contextual', 10, () => buildDivisionContextAuditQuestion('Divisão em problema contextual', gameState.currentLevel || 'medium')),
                 makeStage('Relação entre múltiplos e divisores', 10, () => { const divisor=randFrom([4,5,6,7,8,9,10]); const quotient=randomInt(4,20); return qDivision(divisor*quotient, divisor, 'Relação entre múltiplos e divisores'); }),
                 makeStage('Conferência pela multiplicação', 10, () => { const divisor=randFrom([4,5,6,7,8,9]); const quotient=randomInt(4,18); return qDivision(divisor*quotient, divisor, 'Conferência pela multiplicação'); }),
                 makeStage('Estimativa do quociente', 10, () => buildDivisionEstimateAuditQuestion('Estimativa do quociente')),
@@ -14662,20 +14921,20 @@ function getOperationTrailStages(operation, level) {
                 makeStage('Potências com base 3', 5, () => qPower(3, randFrom([2,3,4,5]), 'Potências com base 3')),
                 makeStage('Potências com base 4 e 5', 5, () => { const base=randFrom([4,5]); const exp=randFrom([2,3,4]); return qPower(base, exp, 'Potências com base 4 e 5'); }),
                 makeStage('Potência de 10', 5, () => qPower(10, randFrom([2,3,4]), 'Potência de 10')),
-                makeStage('Comparar valores de potências', 5, () => { const base=randFrom([2,3,4,5]); const exp=randFrom([2,3,4]); return qPower(base, exp, 'Comparar valores de potências'); }),
+                makeStage('Comparar valores de potências', 5, () => buildPowerCompareAuditQuestion('Comparar valores de potências', gameState.currentLevel || 'easy')),
                 makeStage('Encontrar resultado da potência', 5, () => { const base=randFrom([2,3,4,5,6]); const exp=randFrom([2,3,4]); return qPower(base, exp, 'Encontrar resultado da potência'); }),
                 makeStage('Reconhecer escrita expandida', 5, () => { const base=randFrom([2,3,4,5]); const exp=randFrom([2,3,4]); return qPowerExpanded(base, exp, 'Reconhecer escrita expandida'); }),
-                makeStage('Relacionar potência e padrão', 5, () => { const base=randFrom([2,3,4,5]); const exp=randFrom([2,3,4]); return qPower(base, exp, 'Relacionar potência e padrão'); }),
+                makeStage('Relacionar potência e padrão', 5, () => buildPowerPatternAuditQuestion('Relacionar potência e padrão', gameState.currentLevel || 'easy')),
                 makeStage('Revisão mista do nível', 5, () => { const base=randFrom([2,3,4,5,6,10]); const exp=randFrom([2,3,4]); return Math.random()<0.5 ? qPower(base, exp, 'Revisão mista do nível') : qPowerExpanded(Math.min(base,5), exp, 'Revisão mista do nível'); }),
                 makeStage('Domínio final do nível', 5, () => { const base=randFrom([2,3,4,5,6,10]); const exp=randFrom([2,3,4,5]); return qPower(base, exp, 'Domínio final do nível'); })
             ],
             advanced: [
                 makeStage('Expoente 0', 5, () => { const base=randFrom([2,3,4,5,6,7,8,9]); return qPower(base, 0, 'Expoente 0'); }),
                 makeStage('Expoente 1', 5, () => { const base=randFrom([2,3,4,5,6,7,8,9]); return qPower(base, 1, 'Expoente 1'); }),
-                makeStage('Comparação entre potências', 5, () => { const base=randFrom([2,3,4,5,6]); const exp=randFrom([2,3,4,5]); return qPower(base, exp, 'Comparação entre potências'); }),
+                makeStage('Comparação entre potências', 5, () => buildPowerCompareAuditQuestion('Comparação entre potências', gameState.currentLevel || 'advanced')),
                 makeStage('Potência em expressão curta', 5, () => { const base=randFrom([2,3,4,5,6]); const exp=randFrom([2,3,4]); return qPowerExpanded(base, exp, 'Potência em expressão curta'); }),
                 makeStage('Reconhecer erro comum', 5, () => { const base=randFrom([2,3,4,5,6]); const exp=randFrom([2,3,4]); return qPower(base, exp, 'Reconhecer erro comum'); }),
-                makeStage('Valor faltante em potência simples', 5, () => { const base=randFrom([2,3,4,5,6]); const exp=randFrom([2,3,4]); return qPower(base, exp, 'Valor faltante em potência simples'); }),
+                makeStage('Valor faltante em potência simples', 5, () => buildPowerMissingBaseAuditQuestion('Valor faltante em potência simples')),
                 makeStage('Aplicação em contexto', 5, () => { const base=randFrom([2,3,4,5,10]); const exp=randFrom([2,3,4]); return qPower(base, exp, 'Aplicação em contexto'); }),
                 makeStage('Consolidação conceitual', 5, () => { const base=randFrom([2,3,4,5,6,10]); const exp=randFrom([0,1,2,3,4]); return qPower(base, exp, 'Consolidação conceitual'); }),
                 makeStage('Revisão mista do nível', 5, () => { const base=randFrom([2,3,4,5,6,7,8,10]); const exp=randFrom([0,1,2,3,4,5]); return Math.random()<0.5 ? qPower(base, exp, 'Revisão mista do nível') : qPowerExpanded(Math.min(base,5), Math.max(2, exp || 2), 'Revisão mista do nível'); }),
@@ -16347,6 +16606,34 @@ function buildQuestionStrategicHintText(q) {
 function buildQuestionCommonErrors(q) {
     const ctx = getQuestionPedagogicalContext(q);
     const op = String(ctx.op || q?.operacao || gameState.currentOperation || '');
+    if (op === 'subtraction' && ctx.stage.includes('resultado faltante')) return [
+        { label: 'Esconder o número errado', cause: 'A pergunta pede o resultado da subtração, mas o aluno tenta achar um termo escondido.', recovery: 'Leia o enunciado e confirme se falta descobrir o resultado final da conta.' },
+        { label: 'Trocar subtração por adição', cause: 'Os números do enunciado são somados automaticamente.', recovery: 'Primeiro identifique o todo e a parte retirada; depois calcule o que sobra.' }
+    ];
+    if (op === 'division' && ctx.stage.includes('interpretar o resto')) return [
+        { label: 'Responder com o quociente', cause: 'O aluno encontra os grupos completos, mas não observa o que sobra.', recovery: 'Depois de montar os grupos completos, veja quantos itens restam fora deles.' },
+        { label: 'Ignorar a sobra', cause: 'A leitura para quando os grupos completos acabam.', recovery: 'Pergunte explicitamente: sobrou alguma coisa sem formar outro grupo?' }
+    ];
+    if (op === 'division' && ctx.stage.includes('escolher entre quociente e resto')) return [
+        { label: 'Dar a sobra quando a pergunta quer grupos', cause: 'Quociente e resto não foram separados mentalmente.', recovery: 'Decida se a pergunta pede quantos grupos cabem ou quantos itens sobram.' },
+        { label: 'Dar grupos quando a pergunta quer sobra', cause: 'A leitura para na primeira resposta que aparece.', recovery: 'Volte ao final da pergunta e destaque a palavra que mostra o que deve ser respondido.' }
+    ];
+    if (op === 'division' && ctx.stage.includes('comparar divisão exata e não exata')) return [
+        { label: 'Marcar a divisão maior como exata', cause: 'O aluno usa o tamanho dos números, não a ausência de sobra.', recovery: 'Teste se sobra alguma coisa depois de montar os grupos completos.' },
+        { label: 'Confundir exata com quociente inteiro pequeno', cause: 'A ideia de exatidão não está ligada ao resto zero.', recovery: 'Divisão exata é a que termina sem sobra.' }
+    ];
+    if (op === 'potenciacao' && (ctx.stage.includes('comparar valores de potências') || ctx.stage.includes('comparação entre potências'))) return [
+        { label: 'Comparar só base ou só expoente', cause: 'A potência é julgada pela aparência, sem calcular os valores.', recovery: 'Descubra o valor de cada potência antes de comparar.' },
+        { label: 'Tratar potência como multiplicação simples', cause: 'Base e expoente são lidos como dois fatores comuns.', recovery: 'Reescreva cada potência como multiplicação repetida.' }
+    ];
+    if (op === 'potenciacao' && ctx.stage.includes('relacionar potência e padrão')) return [
+        { label: 'Quebrar o padrão da sequência', cause: 'O aluno não percebe que a base continua e o expoente aumenta de 1 em 1.', recovery: 'Observe o que muda e o que se repete em cada termo da sequência.' },
+        { label: 'Avançar uma etapa errada', cause: 'O próximo termo é estimado sem relacionar com a potência anterior.', recovery: 'Use o termo anterior como apoio e multiplique pela base mais uma vez.' }
+    ];
+    if (op === 'multiplication' && ctx.stage.includes('padrões das tabuadas 2 e 5')) return [
+        { label: 'Contar de um em um', cause: 'O padrão da tabuada não foi percebido.', recovery: 'Leia a sequência em saltos de 2 ou de 5 antes de responder.' },
+        { label: 'Misturar tabuada do 2 com a do 5', cause: 'As regularidades finais dos resultados não foram observadas.', recovery: 'Na tabuada do 5, observe finais 0 ou 5; na do 2, observe números pares.' }
+    ];
     if (ctx.bridge === 'addition-subtraction') return [
         { label: 'Somar em vez de descobrir a parte que falta', cause: 'A soma-pista é lida como conta final.', recovery: 'Volte ao todo e retire a parte conhecida.' },
         { label: 'Escolher a parte conhecida como resposta', cause: 'O aluno identifica o dado, mas não a pergunta.', recovery: 'Releia qual parte está faltando.' }
@@ -16392,28 +16679,42 @@ function buildQuestionCommonErrorsHtml(q) {
 }
 function buildQuestionGradualExplanationHtml(q) {
     const flow = getAdaptiveLearningFlowMeta(q);
+    const contract = q?.learningContract || buildQuestionLearningContract(q || {});
+    const reasoningPrompt = contract.reasoningRequired ? ` Pergunta de raciocínio: ${buildQuestionKeyword(q).replace(/^Palavra-chave:\s*/i, '')}.` : '';
     const level1 = buildFacilitatedQuestionText(q);
-    const level2 = `${getPriority3StrategyText(q)}${flow.tier >= 2 ? ' • Use esta camada se a dica inicial não bastar.' : ''}`;
-    const level3 = `${getPriority3AlternativePathText(q) || buildQuestionStrategicHintText(q)}${flow.tier >= 3 ? ' • Esta é a rota mais completa para reorganizar o raciocínio.' : ''}`;
-    return `<div class="activity-step-grid"><div class="activity-step-card"><strong>Nível 1 — Entender</strong><span>${escapeHtml(level1)}</span></div><div class="activity-step-card"><strong>Nível 2 — Resolver</strong><span>${escapeHtml(level2)}</span></div><div class="activity-step-card"><strong>Nível 3 — Conferir</strong><span>${escapeHtml(level3)}</span></div></div><div class="ils-visual-sub">Camada sugerida agora: ${escapeHtml(flow.tierLabel)}.</div>`;
+    const level2 = `${getPriority3StrategyText(q)}${flow.tier >= 2 ? ' • Use esta camada quando a leitura simples não bastar.' : ''}`;
+    const level3 = `${getPriority3AlternativePathText(q) || buildQuestionStrategicHintText(q)}${flow.tier >= 3 ? ' • Esta é a rota aprofundada, com raciocínio e conferência.' : ''}${reasoningPrompt}`;
+    return `<div class="activity-step-grid"><div class="activity-step-card"><strong>Nível 1 — Simples e direto</strong><span>${escapeHtml(level1)}</span></div><div class="activity-step-card"><strong>Nível 2 — Detalhado</strong><span>${escapeHtml(level2)}</span></div><div class="activity-step-card"><strong>Nível 3 — Aprofundado com raciocínio</strong><span>${escapeHtml(level3)}</span></div></div><div class="ils-visual-sub">Camada sugerida agora: ${escapeHtml(flow.tierLabel)}.${contract.reasoningRequired ? ' Nesta questão, acertar exige explicar mentalmente a ideia antes de confirmar.' : ''}</div>`;
 }
 function buildQuestionTutorFlowHtml(q) {
     const ctx = getQuestionPedagogicalContext(q);
     const flow = getAdaptiveLearningFlowMeta(q);
-    const steps = [
-        `1. Nomeie a tarefa: ${buildQuestionKeyword(q).replace(/^Palavra-chave:\s*/i, '')}.`,
-        `2. Escolha a estratégia: ${getPriority3StrategyText(q)}`,
-        `3. Fluxo de ajuda: primeiro dica leve, depois explicação guiada e, se necessário, resolução comentada.`
-    ];
     const stageInsight = getCurrentQuestionStageDiagnostic(q);
+    const contract = q?.learningContract || buildQuestionLearningContract(q || {});
+    const challenge = String(stageInsight?.focus?.checkpoint || stageInsight?.focus?.studentMove || getPriority3AlternativePathText(q) || '').trim();
+    const steps = [
+        `1. Antes de responder, nomeie a tarefa: ${buildQuestionKeyword(q).replace(/^Palavra-chave:\s*/i, '')}.`,
+        `2. Se errar uma vez: siga a rota do tipo de erro esperado (${flow.errorType.toLowerCase()}) — ${flow.tutorRoute}`,
+        `3. Se errar de novo: abra a explicação guiada e resolva por etapas.`,
+        `4. Se acertar: confira a estratégia usada e tente o desafio extra da mesma ideia.`,
+        `5. Estratégia-base desta questão: ${getPriority3StrategyText(q)}`
+    ];
+    if (contract.reasoningRequired) {
+        steps.splice(1, 0, `2. Antes de confirmar, responda mentalmente: ${buildQuestionKeyword(q).replace(/^Palavra-chave:\s*/i, '')}.`);
+        steps[2] = `3. Se errar uma vez: siga a rota do tipo de erro esperado (${flow.errorType.toLowerCase()}) — ${flow.tutorRoute}`;
+        steps[3] = `4. Se errar de novo: abra a explicação guiada e resolva por etapas.`;
+        steps[4] = `5. Se acertar: confira a estratégia usada e tente o desafio extra da mesma ideia.`;
+        steps[5] = `6. Estratégia-base desta questão: ${getPriority3StrategyText(q)}`;
+    }
     if (stageInsight?.domain?.stateLabel) {
         steps.push(`${steps.length + 1}. Estado desta habilidade: ${stageInsight.domain.stateLabel}. ${stageInsight.domain.studentSignal}`);
     }
     if (stageInsight && stageInsight.count >= 2 && stageInsight.focus && String(stageInsight.label || '').trim()) {
-        steps.push(`${steps.length + 1}. Atenção ao erro que mais se repete aqui: ${stageInsight.label}. ${stageInsight.focus.studentMove}`);
+        steps.push(`${steps.length + 1}. Erro mais provável nesta etapa: ${stageInsight.label}. ${stageInsight.focus.studentMove}`);
     }
     if (ctx.isEstimation) steps.push(`${steps.length + 1}. Elimine alternativas muito pequenas ou muito grandes antes do cálculo detalhado.`);
     if (ctx.isRemainder) steps.push(`${steps.length + 1}. Separe quociente e resto: grupos completos não são o mesmo que sobra.`);
+    if (challenge) steps.push(`${steps.length + 1}. Desafio extra sugerido após o acerto: ${challenge}`);
     steps.push(`${steps.length + 1}. Camada recomendada neste momento: ${flow.tierLabel}.`);
     return `<ol class="activity-flow-list">${steps.map((step) => `<li>${escapeHtml(step)}</li>`).join('')}</ol>`;
 }
@@ -16421,9 +16722,11 @@ function buildQuestionAccessibilityNote(q) {
     const flow = getAdaptiveLearningFlowMeta(q);
     const domain = q?.skillDomain || getCurrentQuestionStageDiagnostic(q)?.domain || null;
     const supports = [
-        'Leitura facilitada em texto simples',
-        'Pista visual para representar a operação',
-        'Resposta alternativa por digitação'
+        'Leitura simplificada da pergunta',
+        'Instrução passo a passo',
+        'Apoio visual descrito em texto',
+        'Resposta alternativa por digitação',
+        'Linguagem inclusiva e foco no que a questão pede'
     ];
     if (flow.tier >= 2) supports.push('Explicação guiada recomendada para esta tentativa');
     if (flow.tier >= 3) supports.push('Passo a passo completo disponível nesta questão');
@@ -16431,12 +16734,15 @@ function buildQuestionAccessibilityNote(q) {
     if (gameState.isVoiceReadActive) supports.push('Leitura em voz ativada nesta sessão');
     else supports.push('Você pode ativar a leitura em voz no botão de acessibilidade');
     if (gameState.isExtraTime) supports.push('Tempo estendido ativado');
+    const contract = q?.learningContract || buildQuestionLearningContract(q || {});
+    if (contract.reasoningRequired) supports.push('Pergunta-chave curta para apoiar compreensão antes da resposta');
     return `Apoios disponíveis: ${supports.join(' • ')}.`;
 }
 function buildQuestionLearningMission(q) {
     const stage = getPriority3StageLabel(q) || 'Etapa atual';
     const opLabel = formatOperationLabel(getQuestionSemanticOperation(q) || q?.operacao || gameState.currentOperation || '');
-    return `Missão pedagógica: entender ${opLabel.toLowerCase()} em “${stage}” sem depender só de tentativa e erro.`;
+    const contract = q?.learningContract || buildQuestionLearningContract(q || {});
+    return `Missão pedagógica: entender ${opLabel.toLowerCase()} em “${stage}” sem depender só de tentativa e erro${contract.reasoningRequired ? ', explicando mentalmente a ideia central' : ''}.`;
 }
 
 function buildAuditStepCards(...items) {
@@ -16649,6 +16955,79 @@ function auditQuestionSupportQuality(q) {
     if (ctx.op === 'multiplication' && ctx.isEqualGroups && !/(grupo|repete|multiplica)/i.test(bundle)) issues.push('support-misses-groups-language');
     return { keyword, reading, visualHtml, hint, issues };
 }
+function getPlaceDigits(n) {
+    const safe = Math.max(0, Math.round(Number(n) || 0));
+    return {
+        units: safe % 10,
+        tens: Math.floor(safe / 10) % 10,
+        hundreds: Math.floor(safe / 100) % 10,
+        thousands: Math.floor(safe / 1000) % 10
+    };
+}
+function evaluateQuestionMathAndLearningContracts(question) {
+    try {
+        if (!question || typeof question !== 'object') return { ok: true, issues: [] };
+        let q = question;
+        const op = String(q.operacao || q.semanticOperation || '').trim();
+        const stageLabel = normalizeSkillStageLabel(q.masteryStageLabel || q.stageLabel || '').toLowerCase();
+        const variant = String(q.auditStageVariant || '').trim().toLowerCase();
+        const text = String(q.question || '').toLowerCase();
+        const n1 = Number(q.num1);
+        const n2 = Number(q.num2);
+        const issues = [];
+        const d1 = getPlaceDigits(n1);
+        const d2 = getPlaceDigits(n2);
+        const hasCarryUnits = Number.isFinite(n1) && Number.isFinite(n2) ? (d1.units + d2.units >= 10) : false;
+        const hasCarryTens = Number.isFinite(n1) && Number.isFinite(n2) ? (d1.tens + d2.tens >= 10) : false;
+        const hasCarryHundreds = Number.isFinite(n1) && Number.isFinite(n2) ? (d1.hundreds + d2.hundreds >= 10) : false;
+        const hasBorrowUnits = Number.isFinite(n1) && Number.isFinite(n2) ? (d1.units < d2.units) : false;
+        const hasBorrowTens = Number.isFinite(n1) && Number.isFinite(n2) ? (d1.tens < d2.tens) : false;
+        const hasBorrowHundreds = Number.isFinite(n1) && Number.isFinite(n2) ? (d1.hundreds < d2.hundreds) : false;
+        if (op === 'addition') {
+            if (stageLabel.includes('sem reagrupamento') && (hasCarryUnits || hasCarryTens || hasCarryHundreds)) issues.push('carry-unexpected');
+            if (stageLabel.includes('reagrupamento nas dezenas') && (!hasCarryTens || hasCarryUnits)) issues.push('carry-tens-required');
+            if (stageLabel.includes('reagrupamento nas unidades') && !hasCarryUnits) issues.push('carry-units-required');
+        }
+        if (op === 'subtraction') {
+            if (stageLabel.includes('sem reserva') && (hasBorrowUnits || hasBorrowTens || hasBorrowHundreds)) issues.push('borrow-unexpected');
+            if (stageLabel.includes('reserva nas dezenas') && (!hasBorrowTens || hasBorrowUnits)) issues.push('borrow-tens-required');
+            if (stageLabel.includes('reserva nas unidades') && !hasBorrowUnits) issues.push('borrow-units-required');
+            if (stageLabel.includes('com reserva') && !(hasBorrowUnits || hasBorrowTens || hasBorrowHundreds)) issues.push('borrow-required');
+        }
+        if (variant === 'division-remainder-interpretation' && !/sobra|sobram|resto/.test(text)) issues.push('remainder-reading-missing');
+        if (variant === 'division-choice-remainder' && !/sobram|sobra|resto/.test(text)) issues.push('choice-remainder-reading-missing');
+        if (variant === 'division-choice-quotient' && !/grupos completos|caixas completas|quantas caixas completas|quantos grupos/.test(text)) issues.push('choice-quotient-reading-missing');
+        if (variant === 'division-exact-vs-nonexact' && !/qual divis[aã]o [ée] exata/.test(text)) issues.push('exact-compare-missing');
+        if (variant === 'power-compare' && !/compare/.test(text)) issues.push('power-compare-missing');
+        if (variant === 'power-pattern' && !/sequ[êe]ncia|pr[óo]ximo valor/.test(text)) issues.push('power-pattern-missing');
+        if (variant === 'multiplication-pattern' && !/sequ[êe]ncia|qual n[úu]mero falta/.test(text)) issues.push('multiplication-pattern-missing');
+        return { ok: issues.length === 0, issues };
+    } catch (_) {
+        return { ok: true, issues: [] };
+    }
+}
+function enforceQuestionContracts(question, ctx = {}) {
+    try {
+        if (!question || typeof question !== 'object') return { question, issues: [], rebuilt: false };
+        const operation = String(ctx.operation || getQuestionSemanticOperation(question) || question.operacao || '');
+        const level = String(ctx.level || gameState.currentLevel || '');
+        const stageLabel = String(ctx.stageLabel || question.masteryStageLabel || question.stageLabel || '');
+        let current = question;
+        let audit = evaluateQuestionMathAndLearningContracts(current);
+        if (audit.ok) return { question: current, issues: [], rebuilt: false };
+        const rebuilt = auditQuestionBankByOperationAndLevel(current, { operation, level, stageLabel });
+        if (rebuilt && typeof rebuilt === 'object') {
+            rebuilt.learningContract = buildQuestionLearningContract(rebuilt);
+            const rebuiltAudit = evaluateQuestionMathAndLearningContracts(rebuilt);
+            if (rebuiltAudit.ok) return { question: rebuilt, issues: audit.issues, rebuilt: true };
+            return { question: rebuilt, issues: rebuiltAudit.issues, rebuilt: true };
+        }
+        return { question: current, issues: audit.issues, rebuilt: false };
+    } catch (_) {
+        return { question, issues: [], rebuilt: false };
+    }
+}
+
 function auditAndFixQuestionBeforeDisplay(question, ctx = {}) {
     try {
         if (!question || typeof question !== 'object') return question;
@@ -16673,6 +17052,17 @@ function auditAndFixQuestionBeforeDisplay(question, ctx = {}) {
             issues.push(`unparsed:${expected.reason}`);
         }
         const safeOp = String(q.operacao || q.semanticOperation || q.operationMetadata || gameState.currentOperation || '');
+        const contractAudit = enforceQuestionContracts(q, {
+            operation: safeOp,
+            level: String(ctx.level || gameState.currentLevel || ''),
+            stageLabel: String(q.masteryStageLabel || q.stageLabel || '')
+        });
+        if (contractAudit.rebuilt && contractAudit.question) {
+            q = contractAudit.question;
+            fixes.push(`contract-rebuilt:${contractAudit.issues.join('|')}`);
+        } else if (contractAudit.issues.length) {
+            issues.push(`contract:${contractAudit.issues.join('|')}`);
+        }
         if (!Array.isArray(q.options) || new Set(q.options.map((v) => String(v))).size < 4 || !q.options.some((v) => Number(v) === Number(q.answer))) {
             q.options = buildQuestionOptions(safeOp, Number(q.answer), {
                 num1: q.num1,
@@ -17239,6 +17629,14 @@ function handleAnswer(selectedAnswer, selectedButton) {
         }
         gameState.score += scoreGain;
         atualizarXP(xpGain);
+        try {
+            const contract = q?.learningContract || buildQuestionLearningContract(q || {});
+            const deservesComprehensionBonus = !!contract.reasoningRequired && String(contract.learningType || '').toLowerCase() === 'comprehension' && gameState.attemptsThisQuestion === 0 && !gameState.isRapidMode && normalizeAdaptiveSupportMode(q?.supportMode || gameState.operationTrail?.supportMode || 'normal') === 'normal';
+            if (deservesComprehensionBonus) {
+                grantPetBonusXP(4);
+                try { PET_LEVEL1_UI.showToast('🧠 Bônus de compreensão +4 XP', { type: 'success', timeout: 2200 }); } catch (_) {}
+            }
+        } catch (_) {}
         try {
             if (!gameState.__combo3Rewarded && Number(gameState.__sessionCorrectStreak || 0) >= 3) {
                 gameState.__combo3Rewarded = true;
@@ -18788,15 +19186,57 @@ function getAdaptiveDistractorBias(operation, ctx = {}) {
         return { commonError: '', lastTypicalError: '', stageIndex: -1, learningType: String(ctx.learningType || 'fluency') };
     }
 }
+function normalizePedagogicalErrorType(value) {
+    const safe = String(value || '').trim().toLowerCase();
+    if (safe === 'conceitual') return 'Conceitual';
+    if (safe === 'leitura') return 'Leitura';
+    if (safe === 'estratégia' || safe === 'estrategia') return 'Estratégia';
+    return 'Cálculo';
+}
+function getLikelyErrorTypeForQuestion(question) {
+    try {
+        const ctx = getQuestionPedagogicalContext(question);
+        if (ctx.isContext || ctx.isRemainder || ctx.isComparison) return 'Leitura';
+        if (ctx.isEstimation || ctx.isMental || ctx.isDecomposition) return 'Estratégia';
+        if (String(question?.learningType || '').toLowerCase() === 'comprehension' || ctx.isMissingTerm || ctx.isMissingFactor || ctx.isMissingDividend || ctx.isMissingDivisor) return 'Conceitual';
+        return 'Cálculo';
+    } catch (_) {
+        return 'Cálculo';
+    }
+}
+function buildErrorTypeSupportRoute(errorType, question, diagnosis = null) {
+    const safeType = normalizePedagogicalErrorType(errorType);
+    const ctx = getQuestionPedagogicalContext(question || {});
+    const label = String(diagnosis?.label || '').trim();
+    if (safeType === 'Leitura') {
+        return ctx.isContext || ctx.isRemainder
+            ? 'Volte ao enunciado e destaque o que a pergunta quer responder: grupos completos, sobra, diferença ou total.'
+            : 'Volte ao enunciado e marque qual número é dado e qual número a pergunta quer descobrir.';
+    }
+    if (safeType === 'Conceitual') {
+        return label
+            ? `Pare o cálculo automático e retome a ideia central da habilidade: ${label.toLowerCase()}.`
+            : 'Pare o cálculo automático e retome a ideia central da habilidade antes de testar outra alternativa.';
+    }
+    if (safeType === 'Estratégia') {
+        return 'Troque de caminho: decomponha, compare por partes, use operação inversa ou confira por outro método antes de responder.';
+    }
+    return 'Refaça a conta com calma, por ordens ou por etapas, e confira o resultado antes de confirmar.';
+}
 function inferErrorDimension(question, diagnosis = null) {
     try {
-        const learningType = String(question?.learningType || inferStageLearningType(question?.operacao || '', question?.masteryStageLabel || question?.stageLabel || '') || 'fluency');
+        const ctx = getQuestionPedagogicalContext(question || {});
         const code = String(diagnosis?.code || '').toLowerCase();
-        if (learningType === 'comprehension') return 'Compreensão';
-        if (/(missing|used_|difference|divisor|dividendo|resto|factor|base|expoente|root_as_half|bridge|comparison|relation|relação)/i.test(code)) return 'Compreensão';
-        return 'Fluência';
+        const label = String(diagnosis?.label || '').toLowerCase();
+        if (/(used_total|used_known|used_dividend|used_divisor|used_subtrahend|used_minuend|used_difference|used_difference_again|used_quotient|used_radicand)/i.test(code)) return 'Leitura';
+        if (ctx.isContext && /(resto|quociente|divisor|dividendo|difference|compar)/i.test(code + ' ' + label)) return 'Leitura';
+        if (/(as_addition|as_subtraction|as_multiplication|as_sum|power_|root_|bridge_|missing_|divisor|dividendo|resto|factor|base|expoente|comparison|relation|relação|term)/i.test(code)) return 'Conceitual';
+        if (/(stopped_partial_sum|extra_group|missed_one_group|extra_repetition|missing_repetition|factor_shift|skip_|neighbor|estimation)/i.test(code)) return 'Estratégia';
+        if (ctx.isEstimation || ctx.isMental || ctx.isDecomposition) return 'Estratégia';
+        if (String(question?.learningType || inferStageLearningType(question?.operacao || '', question?.masteryStageLabel || question?.stageLabel || '') || '').toLowerCase() === 'comprehension') return 'Conceitual';
+        return 'Cálculo';
     } catch (_) {
-        return 'Fluência';
+        return 'Cálculo';
     }
 }
 function computeDistractorCandidateInfo(operation, answer, ctx, value) {
@@ -19152,16 +19592,21 @@ function buildQuestionLearningContract(question) {
     const raw = String(question?.question || '').replace(/\s*=\s*\?\s*$/, '').trim();
     const op = String(question?.operacao || question?.semanticOperation || '').trim();
     const stageLabel = String(question?.stageLabel || question?.masteryStageLabel || '').trim();
+    const normalizedStage = normalizeTrailLabel(stageLabel);
+    const learningType = String(question?.learningType || inferStageLearningType(op, stageLabel) || 'fluency');
     let answerPolicy = 'exact';
     if (/mais próxima por baixo/i.test(raw) || /aproximada/i.test(raw)) answerPolicy = 'floor-estimate';
     else if (/Sem calcular exatamente/i.test(raw) || /estimativa/i.test(stageLabel)) answerPolicy = 'estimate-nearest';
     else if (/resto/i.test(raw)) answerPolicy = 'remainder';
+    const reasoningRequired = learningType === 'comprehension' || /(compar|padr|context|resto|diferen|faltante|estimativa|relação|relacao)/i.test(normalizedStage || raw);
     return {
         skillKey: `${op}::${normalizeTrailLabel(stageLabel) || 'geral'}`,
         operation: op,
         stageLabel,
         answerPolicy,
-        answer: Number(question?.answer)
+        answer: Number(question?.answer),
+        reasoningRequired,
+        learningType
     };
 }
 function buildQuestionPayload(operation, num1, num2, answer, questionString, questionSpeak, stageLabel) {
@@ -19198,34 +19643,37 @@ function showPedagogicalFeedback(isCorrect, operation, q, selectedValue, opts = 
     const isRapid = !!gameState.isRapidMode;
     const DURATION_RAPID = 15000;
     const resolvedOperation = getResolvedFeedbackOperation(operation, q);
-    const flow = getAdaptiveLearningFlowMeta(q, { attempts: Number(gameState.attemptsThisQuestion || 0) });
+    const diagnosis = !isCorrect ? (getDistractorDiagnosis(q, selectedValue) || null) : null;
+    const dimension = diagnosis?.errorDimension || inferErrorDimension(q, diagnosis);
+    const flow = getAdaptiveLearningFlowMeta(q, { attempts: Number(gameState.attemptsThisQuestion || 0), errorType: dimension });
     const stageInsight = getCurrentQuestionStageDiagnostic(q);
+    const contract = q?.learningContract || buildQuestionLearningContract(q || {});
     if (isCorrect) {
         const challenge = String(stageInsight?.focus?.checkpoint || stageInsight?.focus?.studentMove || getPriority3AlternativePathText(q) || '').trim();
         const domainTxt = String(stageInsight?.domain?.stateLabel || '').trim();
         let successMsg = '✅ Correto!';
         if (!isRapid) {
-            if (flow.attempts === 0 && flow.supportMode === 'normal') successMsg += ' Boa leitura da estratégia.';
+            if (flow.attempts === 0 && flow.supportMode === 'normal') successMsg += contract.reasoningRequired ? ' Boa leitura da ideia central.' : ' Boa leitura da estratégia.';
             else successMsg += ' Você reorganizou o raciocínio e conseguiu.';
             if (domainTxt) successMsg += ` Domínio atual: ${domainTxt}.`;
+            if (contract.reasoningRequired) successMsg += ` Conferência mental: ${buildQuestionKeyword(q).replace(/^Palavra-chave:\s*/i, '')}.`;
             if (challenge) successMsg += ` Próximo desafio: ${challenge}`;
         }
         showFeedbackControlled(successMsg.trim(), 'success', isRapid ? 2500 : 5200);
         return;
     }
-    const diagnosis = getDistractorDiagnosis(q, selectedValue) || null;
     const typicalError = diagnosis?.label || classifyTypicalError(q, selectedValue);
-    const dimension = inferErrorDimension(q, diagnosis);
     const targeted = typicalError && typicalError !== 'Erro de cálculo ou atenção nesta habilidade.' ? typicalError : '';
     const hint = buildOperationSpecificPedagogicalHint(resolvedOperation, q, selectedValue, isRapid);
+    const route = String(diagnosis?.supportRoute || buildErrorTypeSupportRoute(dimension, q, diagnosis) || '').trim();
     const nextStep = (!isRapid && stageInsight && stageInsight.focus && String(stageInsight.focus.studentMove || '').trim())
         ? ` Próximo passo: ${String(stageInsight.focus.studentMove || '').trim()}`
         : '';
     const strategy = String(getPriority3StrategyText(q) || '').trim();
     const alternative = String(getPriority3AlternativePathText(q) || buildQuestionStrategicHintText(q) || '').trim();
     let msg = targeted
-        ? `Erro de ${dimension.toLowerCase()}: ${targeted} ${hint}`.trim()
-        : `${hint}`;
+        ? `Erro de ${String(dimension || 'cálculo').toLowerCase()}: ${targeted}. ${route} ${hint}`.trim()
+        : `${route} ${hint}`.trim();
     let prefix = '💡 Dica rápida: ';
     if (!isRapid && flow.tier >= 2) {
         prefix = '🧭 Explicação guiada: ';
@@ -19235,6 +19683,7 @@ function showPedagogicalFeedback(isCorrect, operation, q, selectedValue, opts = 
         prefix = '🧩 Explicação completa: ';
         msg = `${msg} Organize assim: ${strategy}. Faça em etapas: ${alternative}`.trim();
     }
+    if (contract.reasoningRequired) msg = `${msg} Antes de tentar de novo, responda mentalmente: ${buildQuestionKeyword(q).replace(/^Palavra-chave:\s*/i, '')}.`.trim();
     msg = `${msg}${nextStep}`.trim();
     if (isRapid || flow.tier === 1) {
         showFeedbackControlled(prefix + msg, 'incentive', DURATION_RAPID);
@@ -19370,6 +19819,7 @@ function saveError(question, userAnswer) {
         num2: question.num2 ?? null,
         stageLabel: question.stageLabel || question.masteryStageLabel || '',
         typicalError,
+        teacherRecommendation: String(getTeacherRetakeErrorFocus({ code: diagnosis?.code, label: diagnosis?.label || typicalError, operation: question.operacao, stageLabel: question.stageLabel || question.masteryStageLabel || '' }).teacherMove || ''),
         timestamp: Date.now()
     };
     gameState.errors.unshift(errorData);
