@@ -161,6 +161,18 @@ header {
     transform: translateY(-1px);
 }
 
+.main-btn:disabled, .btn-primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+.main-btn:disabled:hover, .btn-primary:disabled:hover {
+    background-color: var(--cor-primaria);
+    transform: none;
+}
+
 .btn-secondary {
     background-color: var(--cor-borda-clara);
     color: var(--cor-texto-principal);
@@ -260,6 +272,17 @@ header {
     background-color: var(--cor-secundaria);
     color: white;
     border-color: var(--cor-secundaria);
+}
+
+.mode-btn.is-disabled,
+.mode-btn[aria-disabled="true"] {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.mode-btn.mode-challenge-ready {
+    border-color: var(--cor-incentivo);
+    box-shadow: 0 0 0 1px rgba(255, 215, 0, 0.18);
 }
 
 .modes-toggle {
@@ -3128,4 +3151,45 @@ body.dark-mode .activity-step-card{
 #profile-cloud-status[data-level="error"] {
   border-color: rgba(255, 107, 107, 0.45);
   background: rgba(255, 107, 107, 0.10);
+}
+
+
+.level-pedagogy-actions {
+    display: flex;
+    justify-content: center;
+    margin: 14px 0 6px;
+}
+.level-direct-challenge {
+    min-width: min(100%, 320px);
+}
+.level-challenge-persistent-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    margin: 18px auto 4px;
+    width: min(100%, 520px);
+}
+.level-challenge-persistent {
+    width: min(100%, 360px);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.level-challenge-persistent-note {
+    margin: 0;
+    text-align: center;
+    font-size: 0.95rem;
+    color: var(--cor-texto-secundario);
+}
+
+
+.challenge-league-pair-note {
+    grid-column: 1 / -1;
+    margin: 0 0 10px 0;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: rgba(0,0,0,0.06);
+    font-size: 0.95rem;
+    line-height: 1.35;
 }

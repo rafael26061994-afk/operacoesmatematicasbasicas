@@ -1084,4 +1084,43 @@ using (
   )
 );
 
+
+
+create or replace view public.challenge_session_leaderboard as
+select
+  gs.student_profile_id,
+  sp.display_name,
+  gs.client_session_id,
+  gs.operation,
+  gs.level_name,
+  gs.mode,
+  gs.score,
+  gs.accuracy,
+  gs.correct_count,
+  gs.wrong_count,
+  gs.answered,
+  gs.ended_at,
+  coalesce(gs.metadata #>> '{challengeLeague,league}', '') as challenge_league,
+  coalesce(gs.metadata #>> '{challengeLeague,leagueLabel}', '') as challenge_league_label,
+  coalesce(gs.metadata #>> '{challengeLeague,lastStatus}', '') as challenge_status,
+  coalesce(gs.metadata #>> '{challengeLeague,lastMedal}', '') as challenge_medal
+from public.game_sessions gs
+join public.student_profiles sp on sp.id = gs.student_profile_id
+where gs.mode = 'challenge'
+order by gs.score desc nulls last, gs.accuracy desc nulls last, gs.ended_at desc;
+
+create or replace view public.challenge_league_standings as
+select
+  sp.id as student_profile_id,
+  sp.display_name,
+  coalesce(pr.snapshot #>> '{challengeLeagues,challenge_mix,currentLevel}', 'league1') as current_league,
+  coalesce(pr.snapshot #>> '{challengeLeagues,challenge_mix,lastStatus}', 'stable') as last_status,
+  coalesce(pr.snapshot #>> '{challengeLeagues,challenge_mix,lastResult,medal}', '') as last_medal,
+  coalesce((pr.snapshot #>> '{challengeLeagues,challenge_mix,lastResult,accuracy}')::integer, 0) as last_accuracy,
+  coalesce((pr.snapshot #>> '{challengeLeagues,challenge_mix,updatedAt}')::bigint, 0) as updated_at_ms,
+  pr.updated_at
+from public.student_progress pr
+join public.student_profiles sp on sp.id = pr.student_profile_id
+order by coalesce((pr.snapshot #>> '{challengeLeagues,challenge_mix,updatedAt}')::bigint, 0) desc, sp.display_name asc;
+
 commit;

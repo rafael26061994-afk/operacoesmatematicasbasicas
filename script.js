@@ -125,7 +125,30 @@ const layoutDesktopBtn = document.getElementById('layout-desktop');
 const toggleLibras = document.getElementById('toggle-libras'); 
 const modeRapidoBtn = document.getElementById('mode-rapido');
 const modeEstudoBtn = document.getElementById('mode-estudo');
+const modeDesafioMainBtn = document.getElementById('mode-desafio-main');
+const FORCE_UNLOCK_CHALLENGE_FOR_TEST = false;
+const CHALLENGE_MIX_OPERATION = 'challenge_mix';
+const CHALLENGE_MIX_LEAGUES = ['league1','league2','league3','league4','league5','league6','league7','league8'];
+
+const CHALLENGE_LEAGUE_META = {
+    league1: { name: 'Liga 1 — Recrutas do Ábaco', short: 'Liga 1', desc: 'Entrada do desafio misto: leitura correta, foco e base de cálculo.' },
+    league2: { name: 'Liga 2 — Sentinelas da Lógica', short: 'Liga 2', desc: 'Mistura controlada para impedir acerto por repetição mecânica.' },
+    league3: { name: 'Liga 3 — Lanceiros da Soma', short: 'Liga 3', desc: 'Variações iniciais com mais troca de formato e menos padrão fixo.' },
+    league4: { name: 'Liga 4 — Guardiões da Diferença', short: 'Liga 4', desc: 'Exige consistência em operações mistas e leitura sem tropeço.' },
+    league5: { name: 'Liga 5 — Capitães do Produto', short: 'Liga 5', desc: 'Validação intermediária com mais autonomia, precisão e controle do erro.' },
+    league6: { name: 'Liga 6 — Navegantes do Quociente', short: 'Liga 6', desc: 'Mistura completa das seis operações com mais aplicação e transferência.' },
+    league7: { name: 'Liga 7 — Estrategistas da Potência', short: 'Liga 7', desc: 'Liga alta: compreensão real sob pressão de variedade e estabilidade.' },
+    league8: { name: 'Liga 8 — Generais da Razão', short: 'Liga 8', desc: 'Liga máxima: confirmação final de compreensão real no desafio misto.' }
+};
+const CHALLENGE_MEDAL_META = {
+    bronze: { icon: '🥉', label: 'Bronze', rank: 1 },
+    silver: { icon: '🥈', label: 'Prata', rank: 2 },
+    gold: { icon: '🥇', label: 'Ouro', rank: 3 }
+};
 const levelButtons = document.querySelectorAll('.level-btn'); 
+const levelSelectionContainer = document.querySelector('#level-selection-screen .level-selection');
+const DEFAULT_LEVEL_SELECTION_HTML = levelSelectionContainer ? levelSelectionContainer.innerHTML : '';
+
 // Melhor compatibilidade de toque: garante ativação em alguns celulares sem duplicar/disparar sozinho.
 const __petTouchClickLock = new WeakMap();
 const __petTouchSyntheticState = new WeakMap();
@@ -455,6 +478,7 @@ function exibirTela(id) {
         updateErrorTrainingButton();
     }
     try { if (id === 'home-screen' || id === 'result-screen') refreshPetProgressMini(); } catch (_) {}
+    try { if (id === 'home-screen' || id === 'level-selection-screen' || id === 'result-screen') updateHomeMainChallengeButton(); } catch (_) {}
     // Mentor só aparece na tela de questões
     try { updateMentorVisibility(id); } catch (_) {}
 }
@@ -646,7 +670,7 @@ function showPedagogicalFeedback(isCorrect, operation, q, selectedValue, opts = 
             if (flow.attempts === 0 && flow.supportMode === 'normal') successMsg += ' Boa leitura da estratégia.';
             else successMsg += ' Você reorganizou o raciocínio e conseguiu.';
             if (domainTxt) successMsg += ` Domínio atual: ${domainTxt}.`;
-            if (challenge) successMsg += ` Desafio extra: ${challenge}`;
+            if (challenge) successMsg += ` Próximo desafio: ${challenge}`;
         }
         showFeedbackControlled(successMsg.trim(), 'success', isRapid ? 2500 : 5200);
         return;
@@ -1040,7 +1064,8 @@ function formatOperationLabel(op) {
         multiplication: 'Multiplicação',
         division: 'Divisão',
         potenciacao: 'Potenciação',
-        radiciacao: 'Radiciação'
+        radiciacao: 'Radiciação',
+        [CHALLENGE_MIX_OPERATION]: 'Desafio Misto'
     };
     return map[op] || String(op || '').toUpperCase();
 }
@@ -1124,14 +1149,24 @@ function getResultLevelContinuationMeta() {
             ruleText = `Regra desta etapa: responda ${req.targetQuestions} questões e acerte pelo menos ${req.requiredCorrect} (${req.targetAccuracyPct}%). Não é pela pontuação final; é pelo bloco da etapa.`;
         }
         if (trail.consolidationMode && last?.consolidation) {
-            badge = last.passed ? '✅ Consolidação validada' : '🟡 Consolidação pendente';
-            statusText = `Consolidação do nível ${petLevelLabel(currentLevel)}: ${last.correct}/${last.asked} acertos (${last.accuracy}%).`;
+            const leagueOutcome = last.challengeLeague || null;
+            const medalMeta = leagueOutcome ? getChallengeMedalMeta(leagueOutcome.medal) : getChallengeMedalMeta('');
+            badge = leagueOutcome && medalMeta.rank > 0
+                ? `${medalMeta.icon} ${medalMeta.label} da liga`
+                : (last.passed ? '✅ Desafio validado' : '🟡 Desafio pendente');
+            statusText = leagueOutcome
+                ? `${leagueOutcome.playedLeagueLabel}: ${last.correct}/${last.asked} acertos (${last.accuracy}%). ${getChallengeLeagueStatusText(leagueOutcome)}`
+                : `Modo Desafio do nível ${petLevelLabel(currentLevel)}: ${last.correct}/${last.asked} acertos (${last.accuracy}%).`;
             nextText = last.passed
-                ? (nextLevelUnlocked ? `Próximo nível liberado: ${petLevelLabel(nextLevel)}.` : 'Nível validado com sucesso.')
-                : (last.weakStageLabel
-                    ? `Antes de subir, retome a etapa ${Number(last.weakStageIndex) + 1}: ${last.weakStageLabel}.`
-                    : 'Antes de subir, refaça a consolidação deste nível.');
-            continueLabel = last.passed ? 'Reforçar este nível' : 'Tentar a consolidação novamente';
+                ? (leagueOutcome?.status === 'promoted'
+                    ? `Nova liga aberta: ${leagueOutcome.targetLeagueLabel}.`
+                    : (nextLevelUnlocked ? `Próximo nível interno liberado: ${petLevelLabel(nextLevel)}.` : 'Liga validada com sucesso.'))
+                : (leagueOutcome?.status === 'relegated'
+                    ? `Você foi rebaixado para ${leagueOutcome.targetLeagueLabel}. Faça reforço e volte para subir de novo.`
+                    : (last.weakStageLabel
+                        ? `Antes de subir, retome a etapa ${Number(last.weakStageIndex) + 1}: ${last.weakStageLabel}.`
+                        : 'Antes de subir, repita o Modo Desafio desta liga.'));
+            continueLabel = last.passed ? (leagueOutcome?.status === 'promoted' ? 'Jogar a próxima liga' : 'Jogar esta liga novamente') : 'Tentar a liga novamente';
         } else if (last) {
             const stageNo = Math.max(1, Number(last.currentStage ?? trail.currentStageIndex ?? 0) + 1);
             const stageName = String(last.stageName || trail.currentStageLabel || gameState.currentQuestion?.masteryStageLabel || 'Etapa atual');
@@ -1139,8 +1174,8 @@ function getResultLevelContinuationMeta() {
                 badge = '✅ Etapa concluída';
                 statusText = `Você fechou a etapa ${stageNo}/${totalStages} — ${stageName} com ${last.correct}/${last.asked} acertos (${last.accuracy}%). A regra continua sendo 80% em cada etapa.`;
                 if (stageNo >= totalStages) {
-                    nextText = `A próxima rodada deste mesmo nível vai abrir a prova de consolidação.${unlockQuestionMeta ? ` Depois dela, faltam ${Math.max(0, Number(unlockQuestionMeta.remainingConsolidation || 0))} questões da consolidação para validar o nível.` : ''}`;
-                    continueLabel = 'Ir para a consolidação';
+                    nextText = `A próxima rodada deste mesmo nível vai abrir o Modo Desafio.${unlockQuestionMeta ? ` Depois dele, faltam ${Math.max(0, Number(unlockQuestionMeta.remainingConsolidation || 0))} questões do desafio para validar o nível.` : ''}`;
+                    continueLabel = 'Ir para o desafio';
                 } else {
                     nextText = `A próxima rodada deste mesmo nível abre a etapa ${Math.min(totalStages, stageNo + 1)}/${totalStages}.${unlockQuestionMeta ? ` Para liberar o próximo nível, ainda faltam pelo menos ${unlockQuestionMeta.remainingTotal} questões no caminho total.` : ''}`;
                     continueLabel = 'Continuar para a próxima etapa';
@@ -1158,7 +1193,7 @@ function getResultLevelContinuationMeta() {
         }
     } else if (currentState?.code === 'mastered' && nextLevelUnlocked) {
         badge = '✅ Próximo nível liberado';
-        nextText = `Você já pode seguir para ${petLevelLabel(nextLevel)} sem voltar à tela inicial. Critério cumprido: 80% nas etapas e consolidação validada.`;
+        nextText = `Você já pode seguir para ${petLevelLabel(nextLevel)} sem voltar à tela inicial. Critério cumprido: etapa dominada e Modo Desafio validado com compreensão real.`;
         continueLabel = 'Jogar novamente este nível';
     }
     return {
@@ -1188,7 +1223,7 @@ function buildManualResultProgressPayload() {
         operationLabel: formatOperationLabel(gameState.currentOperation || ''),
         level: gameState.currentLevel || '',
         levelLabel: petLevelLabel(gameState.currentLevel || ''),
-        mode: gameState.isRapidMode ? 'rapid' : 'study',
+        mode: getSelectedPlayMode(),
         score: Number(gameState.score || 0),
         hits,
         misses,
@@ -1257,6 +1292,7 @@ function updateResultProgressActions() {
     const nextEl = document.getElementById('result-progression-next');
     const continueBtn = document.getElementById('btn-result-continue-level');
     const nextLevelBtn = document.getElementById('btn-result-next-level');
+    const challengeBtn = document.getElementById('btn-result-challenge');
     const saveBtn = document.getElementById('btn-result-save-progress');
     if (!card || !continueBtn || !nextLevelBtn) return null;
     const meta = getResultLevelContinuationMeta();
@@ -1280,9 +1316,20 @@ function updateResultProgressActions() {
         nextLevelBtn.style.display = 'none';
         nextLevelBtn.dataset.targetLevel = '';
     }
+    if (challengeBtn) {
+        const availability = getDirectChallengeAvailability(meta.operation, meta.currentLevel, { silent: true });
+        challengeBtn.style.display = 'inline-flex';
+        challengeBtn.dataset.targetLevel = meta.currentLevel || '';
+        challengeBtn.disabled = !availability.available;
+        challengeBtn.setAttribute('aria-disabled', availability.available ? 'false' : 'true');
+        challengeBtn.textContent = availability.available ? '🧩 Modo Desafio' : '🧩 Modo Desafio 🔒';
+        challengeBtn.title = availability.available
+            ? 'Inicia diretamente a validação de compreensão real deste nível.'
+            : (availability.reason || 'O Modo Desafio ainda está bloqueado para este nível.');
+    }
     return meta;
 }
-function startRequestedResultLevel(requestedLevel) {
+function startRequestedResultLevel(requestedLevel, options = {}) {
     const operation = String(gameState.currentOperation || '');
     const targetLevel = String(requestedLevel || '');
     if (!operation || !targetLevel) return;
@@ -1302,7 +1349,7 @@ function startRequestedResultLevel(requestedLevel) {
         modeRapidoBtn.classList.remove('active');
     }
     hideFeedbackNow();
-    startGame(operation, level);
+    startGame(operation, level, { forceChallenge: !!options.forceChallenge });
 }
 function updateResultPerformanceExplanation() {
     const el = document.getElementById('result-performance-explanation');
@@ -1798,44 +1845,432 @@ function petLevelLabel(level, options = {}) {
     const map = getLevelLabelMap(options);
     return map[level] || String(level || '').toUpperCase();
 }
+
+function getChallengeLeagueMeta(level) {
+    return CHALLENGE_LEAGUE_META[String(level || '').trim()] || null;
+}
+function getChallengeLeagueLabel(level, options = {}) {
+    const meta = getChallengeLeagueMeta(level);
+    if (!meta) return petLevelLabel(level, { isRapidMode: false });
+    return options && options.short ? meta.short : meta.name;
+}
+function isChallengeMixOperation(operation) {
+    return String(operation || '').trim() === CHALLENGE_MIX_OPERATION;
+}
+function getChallengeLeagueOrder(operation) {
+    return isChallengeMixOperation(operation) || !String(operation || '').trim()
+        ? CHALLENGE_MIX_LEAGUES.slice()
+        : getOperationLevelOrder(operation, { isRapidMode: false });
+}
+function getChallengeLeagueInternalLevel(level) {
+    const idx = Math.max(0, CHALLENGE_MIX_LEAGUES.indexOf(String(level || '').trim())) + 1;
+    if (idx <= 2) return 'easy';
+    if (idx <= 5) return 'medium';
+    return 'advanced';
+}
+function getChallengeLeaguePairStartIndex(level, order = CHALLENGE_MIX_LEAGUES) {
+    const safeOrder = Array.isArray(order) && order.length ? order : CHALLENGE_MIX_LEAGUES;
+    const idx = Math.max(0, safeOrder.indexOf(String(level || '').trim()));
+    return Math.floor(idx / 2) * 2;
+}
+function getChallengeLeaguePairLevels(level, order = CHALLENGE_MIX_LEAGUES) {
+    const safeOrder = Array.isArray(order) && order.length ? order : CHALLENGE_MIX_LEAGUES;
+    const start = getChallengeLeaguePairStartIndex(level, safeOrder);
+    return safeOrder.slice(start, Math.min(start + 2, safeOrder.length));
+}
+function getChallengeVisibleLeagueLevels(state, order = CHALLENGE_MIX_LEAGUES) {
+    const safeState = (state && typeof state === 'object') ? state : {};
+    const safeOrder = Array.isArray(order) && order.length ? order : CHALLENGE_MIX_LEAGUES;
+    const anchorLevel = String(safeState.defenseLevel || safeState.currentLevel || safeOrder[0] || '').trim() || String(safeOrder[0] || '');
+    const pair = getChallengeLeaguePairLevels(anchorLevel, safeOrder);
+    return pair.length ? pair : safeOrder.slice(0, Math.min(2, safeOrder.length));
+}
+function getChallengeLeagueUnlockCapLevels(state, order = CHALLENGE_MIX_LEAGUES) {
+    const safeState = (state && typeof state === 'object') ? state : {};
+    const safeOrder = Array.isArray(order) && order.length ? order : CHALLENGE_MIX_LEAGUES;
+    const highest = String(safeState.highestLevel || safeState.currentLevel || safeOrder[0] || '').trim() || String(safeOrder[0] || '');
+    const start = getChallengeLeaguePairStartIndex(highest, safeOrder);
+    const cap = Math.min(safeOrder.length, start + 2);
+    return safeOrder.slice(0, cap);
+}
+function getChallengeMixedOperationRotation(level) {
+    const ops = ['addition', 'subtraction', 'multiplication', 'division', 'potenciacao', 'radiciacao'];
+    const idx = Math.max(0, CHALLENGE_MIX_LEAGUES.indexOf(String(level || '').trim()));
+    const offset = idx % ops.length;
+    return ops.slice(offset).concat(ops.slice(0, offset));
+}
+function isChallengeModeUnlocked() {
+    if (FORCE_UNLOCK_CHALLENGE_FOR_TEST) return true;
+    const state = getRapidMultiplicationLevelState('advanced');
+    return String(state?.code || '').trim() === 'mastered';
+}
+function getChallengeUnlockMessage() {
+    return 'Para liberar o Modo Desafio, conclua primeiro o nível Mestre da multiplicação no Modo Rápido com o aproveitamento mínimo exigido.';
+}
+function getSelectedPlayMode() {
+    if (String(gameState.currentOperation || '').trim() === CHALLENGE_MIX_OPERATION || String(loadPetHomePrefs().mode || '').trim() === 'challenge') return 'challenge';
+    return gameState.isRapidMode ? 'rapid' : 'study';
+}
+function getSelectedPlayModeLabel() {
+    const mode = getSelectedPlayMode();
+    if (mode === 'challenge') return 'Modo Desafio';
+    return mode === 'rapid' ? 'Modo Rápido' : 'Modo Estudo';
+}
+function getChallengeLeagueCloudMeta() {
+    try {
+        if (String(gameState.currentOperation || '').trim() !== CHALLENGE_MIX_OPERATION) return null;
+        const state = getChallengeLeagueState(CHALLENGE_MIX_OPERATION);
+        const currentLevel = String(gameState.currentLevel || state.currentLevel || CHALLENGE_MIX_LEAGUES[0] || '');
+        const last = state.lastResult && typeof state.lastResult === 'object' ? state.lastResult : null;
+        return {
+            league: currentLevel,
+            leagueLabel: getChallengeLeagueLabel(currentLevel),
+            currentLeague: String(state.currentLevel || currentLevel),
+            currentLeagueLabel: getChallengeLeagueLabel(state.currentLevel || currentLevel),
+            visiblePair: getChallengeVisibleLeagueLevels(state, CHALLENGE_MIX_LEAGUES),
+            lastStatus: String(state.lastStatus || ''),
+            lastMedal: String(last?.medal || ''),
+            lastAccuracy: Number.isFinite(Number(last?.accuracy)) ? Number(last.accuracy) : null
+        };
+    } catch (_) {
+        return null;
+    }
+}
+function getChallengeHomeOperationKey() {
+    return CHALLENGE_MIX_OPERATION;
+}
+function getCurrentChallengeLeagueLevel() {
+    const state = getChallengeLeagueState(getChallengeHomeOperationKey());
+    return String(state.currentLevel || CHALLENGE_MIX_LEAGUES[0]);
+}
+function restoreDefaultLevelButtons() {
+    try {
+        if (!levelSelectionContainer || !DEFAULT_LEVEL_SELECTION_HTML) return;
+        if (levelSelectionContainer.dataset.challengeRendered === '1') {
+            levelSelectionContainer.innerHTML = DEFAULT_LEVEL_SELECTION_HTML;
+            levelSelectionContainer.dataset.challengeRendered = '0';
+        }
+    } catch (_) {}
+}
+function startChallengeLeagueSelection(level) {
+    const requestedLevel = String(level || '').trim();
+    if (!requestedLevel) return;
+    if (!isChallengeModeUnlocked() && !FORCE_UNLOCK_CHALLENGE_FOR_TEST) {
+        showFeedbackMessage(getChallengeUnlockMessage(), 'warning', 3600);
+        return;
+    }
+    gameState.isRapidMode = false;
+    gameState.currentOperation = CHALLENGE_MIX_OPERATION;
+    gameState.currentLevel = requestedLevel;
+    try { updatePetHomePrefs({ mode: 'challenge', operation: CHALLENGE_MIX_OPERATION, level: requestedLevel }); } catch (_) {}
+    try { setHomeModeButtonsActive('challenge'); } catch (_) {}
+    startGame(CHALLENGE_MIX_OPERATION, requestedLevel, { forceChallenge: true, skipDiagnostic: true });
+}
+function renderChallengeLeagueButtons() {
+    try {
+        if (!levelSelectionContainer) return;
+        const state = getChallengeLeagueState(CHALLENGE_MIX_OPERATION);
+        const currentLevel = String(state.currentLevel || CHALLENGE_MIX_LEAGUES[0]);
+        const defenseLevel = String(state.defenseLevel || '');
+        const visibleLevels = getChallengeVisibleLeagueLevels(state, CHALLENGE_MIX_LEAGUES);
+        const firstVisibleIdx = Math.max(0, CHALLENGE_MIX_LEAGUES.indexOf(String(visibleLevels[0] || CHALLENGE_MIX_LEAGUES[0])));
+        const pairLabel = `${firstVisibleIdx + 1}-${Math.min(CHALLENGE_MIX_LEAGUES.length, firstVisibleIdx + visibleLevels.length)}`;
+        const note = `<div class="challenge-league-pair-note"><strong>Ligas visíveis agora:</strong> bloco ${pairLabel}. Conclua a segunda liga do bloco para abrir o próximo par.</div>`;
+        const cards = visibleLevels.map((level) => {
+            const meta = getChallengeLeagueMeta(level) || { name: level, desc: '' };
+            const medal = getChallengeMedalMeta(state.medals?.[level] || '');
+            const idx = CHALLENGE_MIX_LEAGUES.indexOf(level) + 1;
+            const isCurrent = currentLevel === level;
+            const isDefense = defenseLevel === level;
+            const unlocked = FORCE_UNLOCK_CHALLENGE_FOR_TEST || isCurrent || (Array.isArray(state.unlockedLevels) && state.unlockedLevels.includes(level));
+            const status = isDefense ? '🛡️ Defesa da liga' : (isCurrent ? '🎯 Liga atual' : (unlocked ? '✅ Liga aberta' : '🔒 Liga fechada'));
+            const medalTxt = medal.rank > 0 ? `Melhor medalha: ${medal.icon} ${medal.label}.` : 'Melhor medalha: ainda não conquistada.';
+            return `<button class="level-btn challenge-league-btn${unlocked ? '' : ' locked-level'}" data-level="${level}" data-challenge-league="1" ${unlocked ? '' : 'disabled aria-disabled="true"'} title="${meta.name}. ${status} ${medalTxt}"><h3>${idx}. ${meta.name}</h3><p>${meta.desc} ${status}. ${medalTxt}</p></button>`;
+        }).join('');
+        levelSelectionContainer.innerHTML = `${note}${cards}`;
+        levelSelectionContainer.dataset.challengeRendered = '1';
+        levelSelectionContainer.querySelectorAll('.challenge-league-btn').forEach((btn) => {
+            btn.addEventListener('click', () => startChallengeLeagueSelection(btn.getAttribute('data-level')));
+        });
+    } catch (_) {}
+}
+function updateHomeChallengeModeUi() {
+    try {
+        const prefs = loadPetHomePrefs();
+        const isChallenge = String(prefs.mode || '').trim() === 'challenge';
+        const grid = document.querySelector('#home-screen .operation-grid');
+        const cta = document.querySelector('#home-screen .call-to-action-paragraph');
+        if (grid) grid.style.display = isChallenge ? 'none' : '';
+        if (cta) cta.textContent = isChallenge
+            ? 'No Modo Desafio, o PET mistura todas as operações e mostra as ligas em pares para caber melhor no celular.'
+            : 'Escolha uma operação para começar e treinar seu cérebro.';
+    } catch (_) {}
+}
+function getChallengeMedalMeta(medal) {
+    return CHALLENGE_MEDAL_META[String(medal || '').trim()] || { icon: '⚪', label: 'Sem medalha', rank: 0 };
+}
+function bestChallengeMedal(current, incoming) {
+    const cur = getChallengeMedalMeta(current);
+    const nxt = getChallengeMedalMeta(incoming);
+    return nxt.rank > cur.rank ? String(incoming || '') : String(current || '');
+}
+function createDefaultChallengeLeagueState(operation = '') {
+    const order = getChallengeLeagueOrder(operation);
+    const first = String(order[0] || 'easy');
+    const firstPair = getChallengeLeaguePairLevels(first, order);
+    return {
+        currentLevel: first,
+        highestLevel: first,
+        unlockedLevels: firstPair.length ? firstPair : [first],
+        medals: {},
+        historyByLevel: {},
+        failStreakByLevel: {},
+        defenseLevel: '',
+        lastStatus: 'stable',
+        lastResult: null,
+        updatedAt: Date.now()
+    };
+}
+function normalizeChallengeLeagueState(state, operation = '') {
+    const base = createDefaultChallengeLeagueState(operation);
+    const safe = (state && typeof state === 'object') ? state : {};
+    const order = getChallengeLeagueOrder(operation);
+    const first = String(order[0] || base.currentLevel || 'easy');
+    const currentLevel = order.includes(String(safe.currentLevel || '')) ? String(safe.currentLevel) : first;
+    const highestLevel = order.includes(String(safe.highestLevel || '')) ? String(safe.highestLevel) : currentLevel;
+    const unlockedRaw = Array.isArray(safe.unlockedLevels) ? safe.unlockedLevels.map(v => String(v || '').trim()).filter(v => order.includes(v)) : [];
+    const unlockCapLevels = getChallengeLeagueUnlockCapLevels({ currentLevel, highestLevel }, order);
+    const unlockedLevels = Array.from(new Set(unlockedRaw.concat(unlockCapLevels).concat(getChallengeLeaguePairLevels(currentLevel, order)).concat([currentLevel])));
+    return {
+        ...base,
+        ...safe,
+        currentLevel,
+        highestLevel,
+        unlockedLevels,
+        medals: (safe.medals && typeof safe.medals === 'object') ? safe.medals : {},
+        historyByLevel: (safe.historyByLevel && typeof safe.historyByLevel === 'object') ? safe.historyByLevel : {},
+        failStreakByLevel: (safe.failStreakByLevel && typeof safe.failStreakByLevel === 'object') ? safe.failStreakByLevel : {},
+        defenseLevel: order.includes(String(safe.defenseLevel || '')) ? String(safe.defenseLevel) : '',
+        lastStatus: String(safe.lastStatus || 'stable'),
+        lastResult: (safe.lastResult && typeof safe.lastResult === 'object') ? safe.lastResult : null,
+        updatedAt: Number(safe.updatedAt || Date.now())
+    };
+}
+function getChallengeLeagueState(operation) {
+    const op = String(operation || '').trim();
+    const progress = loadPetProgress();
+    const all = (progress.challengeLeagues && typeof progress.challengeLeagues === 'object') ? progress.challengeLeagues : {};
+    return normalizeChallengeLeagueState(all[op], op);
+}
+function saveChallengeLeagueState(operation, state) {
+    const op = String(operation || '').trim();
+    if (!op) return null;
+    const progress = loadPetProgress();
+    progress.challengeLeagues = (progress.challengeLeagues && typeof progress.challengeLeagues === 'object') ? progress.challengeLeagues : {};
+    progress.challengeLeagues[op] = normalizeChallengeLeagueState(state, op);
+    savePetProgress(progress);
+    return progress.challengeLeagues[op];
+}
+function shouldPromoteChallengeLeague(history) {
+    const arr = Array.isArray(history) ? history.filter(Boolean).slice(-2) : [];
+    if (arr.length < 2) return false;
+    const a = String(arr[0] || '');
+    const b = String(arr[1] || '');
+    return (a === 'gold' && b === 'gold') || ((a === 'gold' || b === 'gold') && (a === 'silver' || b === 'silver'));
+}
+function computeChallengeLeagueMedal(consRes) {
+    if (!consRes || !consRes.passed) return '';
+    const accuracy = Math.max(0, Number(consRes.accuracy || 0));
+    if (accuracy >= 0.999 && !consRes.usedSupport && !consRes.repeatedDominantError) return 'gold';
+    if (accuracy >= 0.833) return 'silver';
+    return 'bronze';
+}
+function getChallengeLeagueAvailability(operation, level) {
+    const order = getChallengeLeagueOrder(operation);
+    const lvl = String(level || '').trim();
+    const state = getChallengeLeagueState(operation);
+    const available = !!(FORCE_UNLOCK_CHALLENGE_FOR_TEST || state.unlockedLevels.includes(lvl) || state.currentLevel === lvl);
+    return {
+        available,
+        state,
+        recommendedLevel: String(state.currentLevel || order[0] || lvl || ''),
+        reason: available ? '' : `Esta liga ainda não foi aberta. Primeiro consolide ${getChallengeLeagueLabel(state.currentLevel || order[0] || lvl || '', { short: false })}.`
+    };
+}
+function recordChallengeLeagueOutcome(operation, level, consRes) {
+    const op = String(operation || '').trim();
+    const lvl = String(level || '').trim();
+    if (!op || !lvl || !consRes) return null;
+    const order = getChallengeLeagueOrder(op);
+    if (!order.includes(lvl)) return null;
+    let state = getChallengeLeagueState(op);
+    const idx = order.indexOf(lvl);
+    const prev = idx > 0 ? order[idx - 1] : '';
+    const next = idx < order.length - 1 ? order[idx + 1] : '';
+    const medal = computeChallengeLeagueMedal(consRes);
+    let status = 'stable';
+    let toLevel = lvl;
+    const failStreak = Math.max(0, Number(state.failStreakByLevel?.[lvl] || 0));
+    if (consRes.passed) {
+        state.failStreakByLevel[lvl] = 0;
+        state.defenseLevel = '';
+        const history = Array.isArray(state.historyByLevel[lvl]) ? state.historyByLevel[lvl].filter(Boolean).slice(-1) : [];
+        history.push(medal);
+        state.historyByLevel[lvl] = history.slice(-2);
+        state.medals[lvl] = bestChallengeMedal(state.medals[lvl], medal);
+        if (next && shouldPromoteChallengeLeague(state.historyByLevel[lvl])) {
+            state.currentLevel = next;
+            state.highestLevel = order[Math.max(order.indexOf(state.highestLevel), idx + 1)] || next;
+            state.unlockedLevels = Array.from(new Set((Array.isArray(state.unlockedLevels) ? state.unlockedLevels : []).concat(order.slice(0, idx + 2))));
+            status = 'promoted';
+            toLevel = next;
+        } else {
+            state.currentLevel = lvl;
+            state.highestLevel = order[Math.max(order.indexOf(state.highestLevel), idx)] || lvl;
+            state.unlockedLevels = Array.from(new Set((Array.isArray(state.unlockedLevels) ? state.unlockedLevels : []).concat(order.slice(0, Math.max(order.indexOf(state.highestLevel), idx) + 1))));
+            status = medal === 'gold' ? 'victory-strong' : 'victory';
+        }
+    } else {
+        state.historyByLevel[lvl] = [];
+        const nextFail = failStreak + 1;
+        state.failStreakByLevel[lvl] = nextFail;
+        if (nextFail >= 2 && prev) {
+            state.currentLevel = prev;
+            state.defenseLevel = '';
+            state.failStreakByLevel[lvl] = 0;
+            status = 'relegated';
+            toLevel = prev;
+        } else {
+            state.currentLevel = lvl;
+            state.defenseLevel = lvl;
+            status = 'defense';
+        }
+    }
+    state.lastStatus = status;
+    state.updatedAt = Date.now();
+    state.lastResult = {
+        passed: !!consRes.passed,
+        medal,
+        status,
+        level: lvl,
+        fromLevel: lvl,
+        toLevel,
+        accuracy: Math.round(Math.max(0, Number(consRes.accuracy || 0)) * 100),
+        correct: Math.max(0, Number(consRes.correct || 0)),
+        total: Math.max(0, Number(consRes.total || 0)),
+        timestamp: Date.now()
+    };
+    state = saveChallengeLeagueState(op, state) || state;
+    const medalMeta = getChallengeMedalMeta(medal);
+    return {
+        medal,
+        medalIcon: medalMeta.icon,
+        medalLabel: medalMeta.label,
+        status,
+        currentLevel: state.currentLevel,
+        currentLeagueLabel: getChallengeLeagueLabel(state.currentLevel),
+        playedLeagueLabel: getChallengeLeagueLabel(lvl),
+        targetLeagueLabel: getChallengeLeagueLabel(toLevel),
+        state,
+        accuracy: state.lastResult.accuracy,
+        correct: state.lastResult.correct,
+        total: state.lastResult.total,
+        passed: !!consRes.passed
+    };
+}
+function getChallengeLeagueStatusText(outcome) {
+    const o = outcome && typeof outcome === 'object' ? outcome : null;
+    if (!o) return '';
+    if (o.status === 'promoted') return `Promoção para ${o.targetLeagueLabel}.`;
+    if (o.status === 'relegated') return `Rebaixamento para ${o.targetLeagueLabel}.`;
+    if (o.status === 'defense') return `Entrou em Defesa da Liga ${o.playedLeagueLabel}.`;
+    if (o.status === 'victory-strong') return `Liga mantida com vitória forte.`;
+    if (o.status === 'victory') return `Liga mantida com validação consistente.`;
+    return 'Liga atual mantida.';
+}
+function getChallengeLeagueHomeSummary(operation) {
+    const op = String(operation || CHALLENGE_MIX_OPERATION).trim();
+    const state = getChallengeLeagueState(op);
+    const current = getChallengeLeagueLabel(state.currentLevel);
+    const medal = getChallengeMedalMeta(state.medals?.[state.currentLevel] || '').label;
+    return medal && medal !== 'Sem medalha'
+        ? `${current} • melhor medalha: ${medal}`
+        : `${current} • primeira validação pendente`;
+}
 function updateModeAwareLevelCardCopy() {
     try {
-        const isRapid = !!gameState.isRapidMode;
+        const prefs = loadPetHomePrefs();
+        const selectedMode = String(prefs.mode || (gameState.isRapidMode ? 'rapid' : 'study')).trim();
+        const isRapid = selectedMode === 'rapid';
+        const isChallenge = selectedMode === 'challenge';
+        if (isChallenge) {
+            renderChallengeLeagueButtons();
+        } else {
+            restoreDefaultLevelButtons();
+        }
         const titleMap = getLevelLabelMap({ isRapidMode: isRapid });
         const apprenticeBtn = document.getElementById('level-apprentice-btn');
         const easyBtn = document.querySelector('.level-btn[data-level="easy"]');
         const mediumBtn = document.querySelector('.level-btn[data-level="medium"]');
         const advancedBtn = document.querySelector('.level-btn[data-level="advanced"]');
+        const titleEl = document.getElementById('level-selection-title');
+        const copyEl = document.getElementById('level-selection-copy');
+        const noteEl = document.getElementById('level-selection-mode-note');
+        const operation = isChallenge ? CHALLENGE_MIX_OPERATION : String(gameState.currentOperation || prefs.operation || '').trim();
+        const leagueState = getChallengeLeagueState(operation || CHALLENGE_MIX_OPERATION);
+        const setCard = (btn, level, fallbackTitle, fallbackDesc) => {
+            if (!btn) return;
+            const h3 = btn.querySelector('h3');
+            const p = btn.querySelector('p');
+            if (isChallenge) {
+                const meta = getChallengeLeagueMeta(level);
+                const bestMedal = leagueState ? getChallengeMedalMeta(leagueState.medals?.[level] || '') : getChallengeMedalMeta('');
+                const currentLevel = String(leagueState?.currentLevel || '').trim();
+                const defenseLevel = String(leagueState?.defenseLevel || '').trim();
+                let status = '';
+                if (currentLevel === level && defenseLevel === level) status = '🛡️ Defesa da liga';
+                else if (currentLevel === level) status = '🎯 Liga atual';
+                else if (leagueState && Array.isArray(leagueState.unlockedLevels) && leagueState.unlockedLevels.includes(level)) status = '✅ Liga aberta';
+                else if (!FORCE_UNLOCK_CHALLENGE_FOR_TEST) status = '🔒 Liga fechada';
+                else status = '🧪 Liga liberada para teste';
+                if (h3) h3.textContent = meta ? meta.name : fallbackTitle;
+                if (p) {
+                    const medalTxt = bestMedal.rank > 0 ? ` Melhor medalha: ${bestMedal.icon} ${bestMedal.label}.` : ' Medalha ainda não conquistada.';
+                    p.textContent = `${meta ? meta.desc : fallbackDesc} ${status}.${medalTxt}`.trim();
+                }
+                btn.dataset.challengeLeague = '1';
+                btn.title = meta ? `${meta.name}. ${status}.${bestMedal.rank > 0 ? ` Melhor medalha: ${bestMedal.label}.` : ' Ainda sem medalha.'}` : fallbackTitle;
+            } else {
+                if (h3) h3.textContent = fallbackTitle;
+                if (p) p.textContent = fallbackDesc;
+                delete btn.dataset.challengeLeague;
+                btn.removeAttribute('title');
+            }
+        };
+        if (titleEl) titleEl.textContent = isChallenge ? 'Selecione a Liga do Desafio Misto' : 'Selecione a Dificuldade';
+        if (copyEl) {
+            copyEl.textContent = isChallenge
+                ? 'No Modo Desafio, as ligas misturam adição, subtração, multiplicação, divisão, potenciação e radiciação. O aluno não escolhe operação: precisa sustentar domínio em operações mistas.'
+                : 'O nível de dificuldade define a complexidade das questões e, no Modo Rápido, o tempo limite, que é dobrado caso a Acessibilidade (Voz ou Libras) esteja ativa, conforme a regra do jogo.';
+        }
+        if (noteEl) {
+            noteEl.textContent = isChallenge
+                ? 'No Modo Desafio, escolha a liga. As ligas misturam todas as operações e validam compreensão real, não repetição mecânica.'
+                : 'O Modo de Jogo (Rápido/Estudo) e Acessibilidade já foram definidos. Clique em um nível para iniciar o desafio!';
+        }
         if (apprenticeBtn) {
+            apprenticeBtn.classList.toggle('hidden', isChallenge || !getOperationLevelOrder(operation || 'multiplication', { isRapidMode: false }).includes('apprentice'));
             const h3 = apprenticeBtn.querySelector('h3');
             const p = apprenticeBtn.querySelector('p');
-            if (h3) h3.textContent = 'Aprendiz (🌱)';
-            if (p) p.textContent = 'Somente para Multiplicação. Trilha com 10 etapas de compreensão inicial (50 questões no total), Modo Estudo como padrão e mais tempo no Modo Rápido.';
+            if (!isChallenge) {
+                if (h3) h3.textContent = 'Aprendiz (🌱)';
+                if (p) p.textContent = 'Somente para Multiplicação. Trilha com 10 etapas de compreensão inicial (50 questões no total), Modo Estudo como padrão e mais tempo no Modo Rápido.';
+            }
         }
-        if (easyBtn) {
-            const h3 = easyBtn.querySelector('h3');
-            const p = easyBtn.querySelector('p');
-            if (h3) h3.textContent = titleMap.easy;
-            if (p) p.textContent = isRapid
-                ? 'Ideal para iniciar e ganhar ritmo. Números e tabuadas menores (Tempo Base: 15s).'
-                : 'Nível inicial para construir compreensão com mais calma e apoio pedagógico.';
-        }
-        if (mediumBtn) {
-            const h3 = mediumBtn.querySelector('h3');
-            const p = mediumBtn.querySelector('p');
-            if (h3) h3.textContent = titleMap.medium;
-            if (p) p.textContent = isRapid
-                ? 'Desafio intermediário. Tabuadas médias, potências e raízes simples (Tempo Base: 30s).'
-                : 'Nível intermediário para ampliar repertório, estratégias e segurança nos cálculos.';
-        }
-        if (advancedBtn) {
-            const h3 = advancedBtn.querySelector('h3');
-            const p = advancedBtn.querySelector('p');
-            if (h3) h3.textContent = titleMap.advanced;
-            if (p) p.textContent = isRapid
-                ? 'Desafio avançado. Potências e raízes complexas, tabuadas e números altos (Tempo Base: 45s).'
-                : 'Nível avançado para consolidar autonomia, precisão e desafios mais complexos.';
-        }
+        setCard(apprenticeBtn, 'apprentice', 'Aprendiz (🌱)', 'Somente para Multiplicação. Trilha com 10 etapas de compreensão inicial (50 questões no total), Modo Estudo como padrão e mais tempo no Modo Rápido.');
+        setCard(easyBtn, 'easy', titleMap.easy, isRapid ? 'Ideal para iniciar e ganhar ritmo. Números e tabuadas menores (Tempo Base: 15s).' : 'Nível inicial para construir compreensão com mais calma e apoio pedagógico.');
+        setCard(mediumBtn, 'medium', titleMap.medium, isRapid ? 'Desafio intermediário. Tabuadas médias, potências e raízes simples (Tempo Base: 30s).' : 'Nível intermediário para ampliar repertório, estratégias e segurança nos cálculos.');
+        setCard(advancedBtn, 'advanced', titleMap.advanced, isRapid ? 'Desafio avançado. Potências e raízes complexas, tabuadas e números altos (Tempo Base: 45s).' : 'Nível avançado para consolidar autonomia, precisão e desafios mais complexos.');
     } catch (_) {}
 }
 function isPetOnboarded() {
@@ -1945,7 +2380,7 @@ function maybeShowSessionSummary(xpGained) {
                 at: Date.now(),
                 operation: gameState.currentOperation,
                 level: gameState.currentLevel,
-                mode: gameState.isRapidMode ? 'rapid' : 'study',
+                mode: getSelectedPlayMode(),
                 answered,
                 hits,
                 misses,
@@ -2061,8 +2496,10 @@ function loadPetHomePrefs() {
     try {
         const raw = profileStorageGetRaw(PET_HOME_PREFS_KEY);
         const obj = safeJsonParse(raw, def);
+        const rawMode = String(obj?.mode || 'study').trim();
+        const mode = (rawMode === 'rapid' || rawMode === 'challenge') ? rawMode : 'study';
         return {
-            mode: String(obj?.mode || 'study') === 'rapid' ? 'rapid' : 'study',
+            mode,
             operation: String(obj?.operation || ''),
             level: String(obj?.level || '')
         };
@@ -2072,8 +2509,10 @@ function loadPetHomePrefs() {
 }
 function savePetHomePrefs(prefs) {
     try {
+        const rawMode = String(prefs?.mode || 'study').trim();
+        const mode = (rawMode === 'rapid' || rawMode === 'challenge') ? rawMode : 'study';
         profileStorageSetJson(PET_HOME_PREFS_KEY, {
-            mode: String(prefs?.mode || 'study') === 'rapid' ? 'rapid' : 'study',
+            mode,
             operation: String(prefs?.operation || ''),
             level: String(prefs?.level || ''),
             updatedAt: Date.now()
@@ -2089,6 +2528,15 @@ function updatePetHomePrefs(partial = {}) {
     } catch (_) {
         return loadPetHomePrefs();
     }
+}
+function setHomeModeButtonsActive(mode = 'study') {
+    try {
+        const safeMode = String(mode || 'study').trim();
+        if (modeEstudoBtn) modeEstudoBtn.classList.toggle('active', safeMode === 'study');
+        if (modeRapidoBtn) modeRapidoBtn.classList.toggle('active', safeMode === 'rapid');
+        if (modeDesafioMainBtn) modeDesafioMainBtn.classList.toggle('active', safeMode === 'challenge');
+        try { updateHomeChallengeModeUi(); } catch (_) {}
+    } catch (_) {}
 }
 function getPetRapidHintCredits() {
     try { return Math.max(0, Number(loadPetProgress().rapidHintCredits || 0)); } catch (_) { return 0; }
@@ -2330,13 +2778,13 @@ function updatePetDailyMissionProgressFromQuestion(question, wasCorrectFinal) {
 function applySavedPetHomePreferences() {
     try {
         const prefs = loadPetHomePrefs();
-        const rapidBtn = document.getElementById('mode-rapido');
-        const studyBtn = document.getElementById('mode-estudo');
-        const isRapid = String(prefs.mode || 'study') === 'rapid';
+        const mode = String(prefs.mode || 'study').trim();
+        const isRapid = mode === 'rapid';
         gameState.isRapidMode = isRapid;
-        if (rapidBtn) rapidBtn.classList.toggle('active', isRapid);
-        if (studyBtn) studyBtn.classList.toggle('active', !isRapid);
+        try { setHomeModeButtonsActive(mode); } catch (_) {}
         try { updateModeAwareLevelCardCopy(); } catch (_) {}
+        try { updateHomeMainChallengeButton(); } catch (_) {}
+try { updateHomeChallengeModeUi(); } catch (_) {}
         if (String(gameState.currentScreen || '') === 'level-selection-screen' && prefs.operation) {
             try { updateLevelButtonsForOperation(prefs.operation); } catch (_) {}
         }
@@ -2385,7 +2833,8 @@ function loadPetProgress() {
         badges: {},
         rapidHintCredits: 0,
         rapidMultiplicationTrail: normalizeRapidMultiplicationTrailProgress(),
-        personalBests: {}
+        personalBests: {},
+        challengeLeagues: {}
     };
     try {
         const raw = profileStorageGetRaw(PET_PROGRESS_KEY);
@@ -2393,6 +2842,11 @@ function loadPetProgress() {
         if (!obj || typeof obj !== 'object') return def;
         const badges = (obj.badges && typeof obj.badges === 'object') ? obj.badges : {};
         const personalBests = (obj.personalBests && typeof obj.personalBests === 'object') ? obj.personalBests : {};
+        const challengeLeaguesRaw = (obj.challengeLeagues && typeof obj.challengeLeagues === 'object') ? obj.challengeLeagues : {};
+        const challengeLeagues = {};
+        Object.keys(challengeLeaguesRaw).forEach((op) => {
+            challengeLeagues[op] = normalizeChallengeLeagueState(challengeLeaguesRaw[op], op);
+        });
         return {
             ...def,
             ...obj,
@@ -2406,7 +2860,8 @@ function loadPetProgress() {
             rapidHintCredits: Math.max(0, Number(obj.rapidHintCredits || 0)),
             rapidMultiplicationTrail: normalizeRapidMultiplicationTrailProgress(obj.rapidMultiplicationTrail),
             badges,
-            personalBests
+            personalBests,
+            challengeLeagues
         };
     } catch (_) {
         return def;
@@ -2488,6 +2943,7 @@ function startPetDailyMissionNow() {
             const studyBtn = document.getElementById('mode-estudo');
             if (rapidBtn) rapidBtn.classList.toggle('active', gameState.isRapidMode);
             if (studyBtn) studyBtn.classList.toggle('active', !gameState.isRapidMode);
+            try { updateHomeMainChallengeButton(); } catch (_) {}
         } catch (_) {}
         try { PET_LEVEL1_UI.showToast(`🎯 ${getPetDailyMissionStatusText(mission)}`, { type: 'info', timeout: 2600 }); } catch (_) {}
         startGame(operation, level, { skipDiagnostic: true });
@@ -3561,7 +4017,7 @@ function recordPetCompletedSession({ sessionType = 'sessao', upd = null, bonusAp
             level,
             levelLabel: petLevelLabel(level),
             mode,
-            modeLabel: gameState.isRapidMode ? 'Modo Rápido' : 'Modo Estudo',
+            modeLabel: getSelectedPlayModeLabel(),
             submode: buildPetSubmodeLabel(),
             stageNo: activeSkillStage,
             stageLabel: activeSkillLabel,
@@ -3600,7 +4056,8 @@ function recordPetCompletedSession({ sessionType = 'sessao', upd = null, bonusAp
             profileName: (getStudentProfile()?.name || ''),
             profileTurma: (getStudentProfile()?.turma || ''),
             profileEscola: (getStudentProfile()?.escola || ''),
-            appVersion: (document.body.getAttribute('data-version') || '')
+            appVersion: (document.body.getAttribute('data-version') || ''),
+            challengeLeague: getChallengeLeagueCloudMeta()
         };
         appendPetSessionHistory(entry);
     } catch (_) {}
@@ -5732,7 +6189,7 @@ function buildInProgressCloudSessionPayload() {
         operation: String(gameState.currentOperation || ''),
         level: String(gameState.currentLevel || ''),
         levelLabel: petLevelLabel(gameState.currentLevel || ''),
-        mode: gameState.isRapidMode ? 'rapid' : 'study',
+        mode: getSelectedPlayMode(),
         stageNo: (gameState.operationTrail && gameState.operationTrail.masteryMode)
             ? (Number(gameState.operationTrail.currentStageIndex || 0) + 1)
             : null,
@@ -5748,7 +6205,8 @@ function buildInProgressCloudSessionPayload() {
         metadata: {
             inProgress: true,
             appVersion: String(document.body.getAttribute('data-version') || ''),
-            source: 'attempt-flow'
+            source: 'attempt-flow',
+            challengeLeague: getChallengeLeagueCloudMeta()
         }
     };
 }
@@ -5780,7 +6238,7 @@ function buildCloudAttemptPayload(question, selectedAnswer, isCorrect, extra = {
             attemptNo,
             questionSeq,
             level: String(gameState.currentLevel || ''),
-            mode: gameState.isRapidMode ? 'rapid' : 'study',
+            mode: getSelectedPlayMode(),
             source: gameState.isDiagnosticMode ? 'diagnostic' : (gameState.isTrainingErrors ? 'training' : 'game'),
             supportMode: String(q.supportMode || gameState.operationTrail?.supportMode || 'normal'),
             usedAlternativeResponse: !!q.usedAlternativeResponse,
@@ -5794,9 +6252,8 @@ function buildCloudAttemptPayload(question, selectedAnswer, isCorrect, extra = {
             selectedDistractorCode: String(diagnosis?.code || ''),
             selectedDistractorLabel: String(diagnosis?.label || ''),
             selectedDistractorFeedback: String(diagnosis?.feedback || ''),
-            selectedErrorDimension: String(diagnosis?.errorDimension || inferErrorDimension(q, diagnosis) || ''),
-            teacherRecommendation: String(getTeacherRetakeErrorFocus({ code: diagnosis?.code, label: diagnosis?.label, operation: String(q.operacao || ''), stageLabel: String(q.stageLabel || q.masteryStageLabel || '') }).teacherMove || ''),
-            appVersion: String(document.body.getAttribute('data-version') || '')
+            appVersion: String(document.body.getAttribute('data-version') || ''),
+            challengeLeague: getChallengeLeagueCloudMeta()
         }
     };
 }
@@ -6059,7 +6516,7 @@ function ensureLevelPedagogyCard() {
                 <h2>Liberação pedagógica</h2>
                 <button id="level-pedagogy-close" class="level-pedagogy-close" type="button" aria-label="Fechar mensagem do mapa de níveis">✕</button>
             </div>
-            <p id="level-pedagogy-summary">Os níveis agora mostram se estão liberados, em consolidação, dominados, bloqueados ou pedindo retorno.</p>
+            <p id="level-pedagogy-summary">Os níveis agora mostram se estão liberados, em validação, dominados, bloqueados ou pedindo retorno.</p>
             <div id="level-unlock-progress-card" class="level-unlock-progress-card" aria-live="polite">
                 <div class="level-unlock-progress-head">
                     <strong id="level-unlock-progress-title">Progresso para liberar o próximo nível</strong>
@@ -6088,6 +6545,9 @@ function ensureLevelPedagogyCard() {
                     <p id="level-unlock-progress-explain-note" class="level-unlock-progress-explain-note">A barra resume os critérios pedagógicos usados para a liberação.</p>
                     <ul id="level-unlock-progress-criteria" class="level-unlock-progress-criteria"></ul>
                 </div>
+            </div>
+            <div class="level-pedagogy-actions">
+                <button id="btn-level-direct-challenge" class="btn-primary level-direct-challenge hidden" type="button" hidden>🧩 Iniciar Modo Desafio</button>
             </div>
             <div class="level-pedagogy-legend" aria-hidden="true">
                 <span class="level-state-chip state-released">✅ Liberado</span>
@@ -6120,6 +6580,22 @@ function ensureLevelPedagogyCard() {
         if (closeBtn && !closeBtn.dataset.bound) {
             closeBtn.dataset.bound = '1';
             closeBtn.addEventListener('click', () => hideLevelPedagogyCard());
+        }
+        const challengeBtn = card.querySelector('#btn-level-direct-challenge');
+        if (challengeBtn && !challengeBtn.dataset.bound) {
+            challengeBtn.dataset.bound = '1';
+            challengeBtn.addEventListener('click', () => {
+                const operation = String(challengeBtn.dataset.operation || gameState.currentOperation || '').trim();
+                const level = String(challengeBtn.dataset.level || '').trim();
+                if (!operation || !level) return;
+                const availability = getDirectChallengeAvailability(operation, level, { silent: true });
+                if (!availability.available) {
+                    showFeedbackMessage(availability.reason || 'O Modo Desafio ainda não está liberado para este nível.', 'warning', 4200);
+                    return;
+                }
+                gameState.currentOperation = operation;
+                startGame(operation, level, { forceChallenge: true });
+            });
         }
         if (!screen.dataset.levelPedagogyOutsideBound) {
             screen.dataset.levelPedagogyOutsideBound = '1';
@@ -6282,7 +6758,7 @@ function getLevelUnlockRuleText(operation, level, stages = [], preferFinalStage 
     const targetQuestions = Math.max(1, Number(cfg.stageTarget) || Number(stage?.count) || 10);
     const targetAccuracyPct = Math.round((Number(cfg.targetAccuracy) || 0.8) * 100);
     const requiredCorrect = Math.max(1, Math.ceil(targetQuestions * (Number(cfg.targetAccuracy) || 0.8)));
-    return `Regra objetiva do nível: não é pela pontuação final. Em cada etapa, responda ${targetQuestions} quest${targetQuestions === 1 ? 'ão' : 'ões'} e acerte pelo menos ${requiredCorrect} (${targetAccuracyPct}%). Depois, na etapa final, passe na prova de consolidação.`;
+    return `Regra objetiva do nível: não é pela pontuação final. Em cada etapa, responda ${targetQuestions} quest${targetQuestions === 1 ? 'ão' : 'ões'} e acerte pelo menos ${requiredCorrect} (${targetAccuracyPct}%). Depois, na etapa final, passe no Modo Desafio de compreensão real.`;
 }
 function getNextLevelUnlockProgress(operation, states = null) {
     const levels = getOperationLevelOrder(operation, { isRapidMode: !!gameState.isRapidMode });
@@ -6381,6 +6857,7 @@ function updateLevelUnlockProgressCard(operation, states = null) {
         const confidenceEl = document.getElementById('level-unlock-confidence');
         const explainNoteEl = document.getElementById('level-unlock-progress-explain-note');
         const criteriaEl = document.getElementById('level-unlock-progress-criteria');
+        const challengeBtn = document.getElementById('btn-level-direct-challenge');
         const meta = getNextLevelUnlockProgress(operation, states);
         if (!meta) {
             if (wrapEl) wrapEl.classList.add('hidden');
@@ -6406,6 +6883,21 @@ function updateLevelUnlockProgressCard(operation, states = null) {
                 const weight = Number(item?.weight) || 1;
                 return `<li><strong>${item?.label || 'Critério'}</strong> — ${ratio}% • peso ${weight.toFixed(2).replace(/\.00$/, '')}. <span>${item?.detail || ''}</span></li>`;
             }).join('');
+        }
+        if (challengeBtn) {
+            const sourceLevel = String(meta?.sourceLevel || '').trim();
+            const availability = sourceLevel ? getDirectChallengeAvailability(operation, sourceLevel, { silent: true }) : { available: false, reason: 'O Modo Desafio ainda não está disponível para este nível.' };
+            challengeBtn.hidden = false;
+            challengeBtn.classList.remove('hidden');
+            challengeBtn.style.display = 'inline-flex';
+            challengeBtn.dataset.operation = operation;
+            challengeBtn.dataset.level = sourceLevel;
+            challengeBtn.disabled = !availability.available;
+            challengeBtn.setAttribute('aria-disabled', availability.available ? 'false' : 'true');
+            challengeBtn.textContent = availability.available ? '🧩 Iniciar Modo Desafio' : '🧩 Modo Desafio 🔒';
+            challengeBtn.title = availability.available
+                ? 'Inicia a validação do domínio com o Modo Desafio.'
+                : (availability.reason || 'O Modo Desafio ainda está bloqueado para este nível.');
         }
         if (wrapEl) {
             wrapEl.dataset.targetLevel = meta.targetLevel || '';
@@ -6660,6 +7152,92 @@ function computeOperationLevelPedagogicalStates(operation) {
     });
     return out;
 }
+function getForcedChallengeTestLevel(operation, preferredLevel = '') {
+    const safeOperation = String(operation || '').trim();
+    if (!safeOperation) return '';
+    const prefs = loadPetHomePrefs();
+    const seen = new Set();
+    const candidates = [
+        String(preferredLevel || '').trim(),
+        String(gameState.currentLevel || '').trim(),
+        String(prefs?.level || '').trim(),
+        'advanced',
+        'medium',
+        'easy',
+        'apprentice'
+    ];
+    for (const level of candidates) {
+        if (!level || seen.has(level)) continue;
+        seen.add(level);
+        const stages = getOperationTrailStages(safeOperation, level) || [];
+        if (Array.isArray(stages) && stages.length) return level;
+    }
+    return '';
+}
+function updateHomeMainChallengeButton() {
+    try {
+        const btn = modeDesafioMainBtn || document.getElementById('mode-desafio-main');
+        if (!btn) return null;
+        const prefs = loadPetHomePrefs();
+        const selectedMode = String(prefs.mode || 'study').trim();
+        const available = !!isChallengeModeUnlocked();
+        const operation = CHALLENGE_MIX_OPERATION;
+        const level = getCurrentChallengeLeagueLevel();
+        const challengeSummary = getChallengeLeagueHomeSummary(operation);
+        btn.dataset.operation = operation;
+        btn.dataset.level = level;
+        btn.dataset.available = available ? 'true' : 'false';
+        btn.setAttribute('aria-disabled', available ? 'false' : 'true');
+        btn.classList.toggle('is-disabled', !available);
+        btn.classList.toggle('mode-challenge-ready', available);
+        btn.classList.toggle('active', selectedMode === 'challenge');
+        btn.textContent = available ? 'Desafio' : 'Desafio 🔒';
+        btn.title = available ? `Modo Desafio disponível${challengeSummary ? ` • ${challengeSummary}` : ''}.` : getChallengeUnlockMessage();
+        try { updateHomeChallengeModeUi(); } catch (_) {}
+        return { available, reason: available ? '' : getChallengeUnlockMessage(), operation, level };
+    } catch (_) {
+        return null;
+    }
+}
+
+function updatePersistentLevelChallengeButton(operation, meta = null) {
+    try {
+        const btn = document.getElementById('btn-level-screen-challenge');
+        const note = document.getElementById('level-screen-challenge-note');
+        if (!btn) return null;
+        const safeOperation = String(operation || gameState.currentOperation || '').trim();
+        const sourceLevel = String(meta?.sourceLevel || '').trim();
+        if (isChallengeMixOperation(safeOperation) || String(loadPetHomePrefs().mode || '').trim() === 'challenge') {
+            btn.hidden = true;
+            btn.classList.add('hidden');
+            if (note) note.textContent = 'No Modo Desafio, o PET mostra 2 ligas por vez. Ao concluir a segunda liga do bloco, o próximo par é liberado.';
+            return null;
+        }
+        const fallbackReason = gameState.isRapidMode
+            ? 'O Modo Desafio aparece apenas nas trilhas por domínio do Modo Estudo.'
+            : 'Consolide a etapa final do nível atual para liberar o Modo Desafio.';
+        const availability = (safeOperation && sourceLevel)
+            ? getDirectChallengeAvailability(safeOperation, sourceLevel, { silent: true })
+            : { available: false, reason: fallbackReason };
+        btn.dataset.operation = safeOperation;
+        btn.dataset.level = sourceLevel;
+        btn.disabled = !availability.available;
+        btn.setAttribute('aria-disabled', availability.available ? 'false' : 'true');
+        btn.textContent = availability.available ? '🧩 Modo Desafio' : '🧩 Modo Desafio 🔒';
+        btn.title = availability.available
+            ? `Inicia a validação de compreensão real na ${getChallengeLeagueLabel(sourceLevel || gameState.currentLevel || 'easy')}.`
+            : (availability.reason || fallbackReason);
+        if (note) {
+            note.textContent = availability.available
+                ? `O desafio do nível ${petLevelLabel(sourceLevel || gameState.currentLevel || 'easy', { isRapidMode: false })} está liberado. Agora o sistema valida compreensão real, não só pontuação.`
+                : (availability.reason || fallbackReason);
+        }
+        return availability;
+    } catch (_) {
+        return null;
+    }
+}
+
 function applyLevelButtonPedagogy(operation, states) {
     try {
         ensureLevelPedagogyCard();
@@ -6676,10 +7254,11 @@ function applyLevelButtonPedagogy(operation, states) {
                 summaryEl.textContent = `${policyText}${priority.badge.replace(/^[^\s]+\s/, '')}: ${parts.join(' ') || 'Use o estado do nível para decidir o próximo passo.'}`;
             } else {
                 const policy = getPedagogyPolicyConfig();
-                summaryEl.textContent = `Política ${policy.label}. Os níveis agora mostram se estão liberados, em consolidação, dominados, bloqueados ou pedindo retorno.`;
+                summaryEl.textContent = `Política ${policy.label}. Os níveis agora mostram se estão liberados, em validação, dominados, bloqueados ou pedindo retorno.`;
             }
         }
         const unlockMeta = updateLevelUnlockProgressCard(operation, states);
+        try { updatePersistentLevelChallengeButton(operation, unlockMeta); } catch (_) {}
         levelButtons.forEach((button) => {
             const level = String(button.getAttribute('data-level') || '');
             const state = states[level];
@@ -6748,6 +7327,13 @@ function updateLevelButtonsForOperation(operation) {
     const apprenticeBtn = document.getElementById('level-apprentice-btn');
     const easyBtn = document.querySelector('.level-btn[data-level="easy"]');
     updateModeAwareLevelCardCopy();
+    if (String(loadPetHomePrefs().mode || '').trim() === 'challenge' || isChallengeMixOperation(operation)) {
+        if (apprenticeBtn) {
+            apprenticeBtn.classList.add('hidden');
+            apprenticeBtn.setAttribute('aria-hidden', 'true');
+        }
+        return;
+    }
     if (!apprenticeBtn) return;
     const hasApprentice = !!((getOperationTrailStages(String(operation || ''), 'apprentice') || []).length);
     const showApprentice = hasApprentice && !gameState.isRapidMode;
@@ -6763,6 +7349,7 @@ function updateLevelButtonsForOperation(operation) {
     applyLevelButtonPedagogy(String(operation || ''), states);
 }
 function renderLearningMapPreview(operation) {
+    if (isChallengeMixOperation(operation) || String(loadPetHomePrefs().mode || '').trim() === 'challenge') { hideLevelPedagogyCard(); return; }
     ensureLearningMapUI();
     const rowsEl = document.getElementById('learning-map-rows');
     if (!rowsEl) return;
@@ -6946,7 +7533,8 @@ function renderRanking() {
             multiplication: 'Multiplicação (×)',
             division: 'Divisão (÷)',
             potenciacao: 'Potenciação',
-            radiciacao: 'Radiciação'
+            radiciacao: 'Radiciação',
+        [CHALLENGE_MIX_OPERATION]: 'Desafio Misto'
         };
         const opLabel = opMap[e.operation] || e.operation;
         const lvl = petLevelLabel(e.level, { isRapidMode: /rápido/i.test(String(e.mode || '')) });
@@ -9947,7 +10535,7 @@ function getOperationTrailKey(operation, level) {
     return `${String(operation || '')}::${String(level || '')}`;
 }
 function isMasteryTrailOperation(operation) {
-    return operation === 'addition' || operation === 'subtraction' || operation === 'division' || operation === 'potenciacao' || operation === 'radiciacao' || operation === 'multiplication';
+    return operation === 'addition' || operation === 'subtraction' || operation === 'division' || operation === 'potenciacao' || operation === 'radiciacao' || operation === 'multiplication' || isChallengeMixOperation(operation);
 }
 function getOperationMasteryConfig(operation, currentStage) {
     const stageCount = Math.max(1, Number(currentStage?.count) || 1);
@@ -10346,28 +10934,21 @@ function getAdaptiveLearningFlowMeta(q, opts = {}) {
         const attempts = Math.max(0, Number((opts.attempts ?? gameState.attemptsThisQuestion) || 0));
         const stageInsight = getCurrentQuestionStageDiagnostic(q);
         const supportMode = normalizeAdaptiveSupportMode(q?.supportMode || stageInsight?.domain?.recommendedSupport || gameState.operationTrail?.supportMode || 'normal');
-        const explicitErrorType = String(opts.errorType || q?.lastErrorDimension || gameState.__lastErrorMeta?.errorDimension || stageInsight?.errorDimension || '').trim();
-        const errorType = normalizePedagogicalErrorType(explicitErrorType || getLikelyErrorTypeForQuestion(q));
         let tier = 1;
         if (supportMode === 'guided' || attempts >= 1) tier = 2;
         if (supportMode === 'very_guided' || attempts >= 2) tier = 3;
         if (stageInsight?.domain?.due && tier < 2) tier = 2;
         if (stageInsight?.domain?.stateCode === 'fragile' && attempts >= 1) tier = 3;
-        if ((errorType === 'Leitura' || errorType === 'Conceitual') && tier < 2) tier = 2;
-        if ((errorType === 'Estratégia' || errorType === 'Conceitual') && attempts >= 1 && tier < 3) tier = 3;
-        const tutorRoute = buildErrorTypeSupportRoute(errorType, q, null);
         return {
             attempts,
             supportMode,
             tier,
             tierLabel: tier === 1 ? 'Dica rápida' : (tier === 2 ? 'Explicação guiada' : 'Explicação completa'),
             domainState: String(stageInsight?.domain?.stateLabel || ''),
-            dueReview: !!stageInsight?.domain?.due,
-            errorType,
-            tutorRoute
+            dueReview: !!stageInsight?.domain?.due
         };
     } catch (_) {
-        return { attempts: 0, supportMode: 'normal', tier: 1, tierLabel: 'Dica rápida', domainState: '', dueReview: false, errorType: 'Cálculo', tutorRoute: '' };
+        return { attempts: 0, supportMode: 'normal', tier: 1, tierLabel: 'Dica rápida', domainState: '', dueReview: false };
     }
 }
 function getSkillStabilityMeta(record, masteryThreshold = 0.8) {
@@ -10417,12 +10998,7 @@ function getDistractorDiagnosis(question, selectedAnswer) {
         const num2 = Number(q.num2);
         const knownResult = parseTrailingResult(qText);
         if (!Number.isFinite(selected) || !Number.isFinite(answer) || selected === answer) return null;
-        const make = (code, errLabel, feedback) => {
-            const draft = { code, label: errLabel, feedback };
-            draft.errorDimension = inferErrorDimension(q, draft);
-            draft.supportRoute = buildErrorTypeSupportRoute(draft.errorDimension, q, draft);
-            return draft;
-        };
+        const make = (code, errLabel, feedback) => ({ code, label: errLabel, feedback });
         const directMeta = Array.isArray(q.distractorMeta)
             ? q.distractorMeta.find((it) => Number(it?.value) === selected)
             : null;
@@ -10678,6 +11254,83 @@ function inferStageLearningType(operation, stageLabel) {
 function getLearningTypeLabel(type) {
     return String(type || '') === 'comprehension' ? 'Compreensão' : 'Fluência';
 }
+
+const CHALLENGE_VALIDATION_CONFIG = {
+    totalItems: 6,
+    minOverallAccuracy: 0.8,
+    requiredRoles: { fluency: 2, structural: 2, context: 1, transfer: 1 },
+    mustHitAtLeastOneStructural: true,
+    mustHitContext: true,
+    mustHitTransfer: true,
+    failOnRepeatedDominantError: true,
+    dominantErrorRepeatLimit: 2,
+    failIfSupportModeNotNormal: true
+};
+function formatChallengeRoleLabel(role) {
+    const safe = String(role || '').trim().toLowerCase();
+    if (safe === 'transfer') return 'Transferência';
+    if (safe === 'context') return 'Aplicação';
+    if (safe === 'structural') return 'Estrutura';
+    return 'Fluência';
+}
+function inferChallengeValidationRole(operation, stageLabel, learningType = '') {
+    const label = normalizeTrailLabel(stageLabel);
+    if (!label) return String(learningType || '').toLowerCase() === 'comprehension' ? 'structural' : 'fluency';
+    const contextTokens = [
+        'contexto', 'contextos', 'problema', 'problemas', 'aplicacao', 'aplicação', 'estimativa',
+        'comparar', 'compare', 'diferenca', 'diferença', 'grupos iguais', 'soma repetida',
+        'dobro e triplo', 'contagem em saltos', 'situacao', 'situação'
+    ];
+    const structuralTokens = [
+        'faltante', 'desconhecida', 'desconhecido', 'completar', 'decomposicao', 'decomposição',
+        'comutatividade', 'distributiva', 'relacao', 'relação', 'divisor', 'dividendo',
+        'quociente', 'valor faltante', 'numero entre', 'número entre', 'expressao', 'expressão',
+        'leitura', 'conferencia', 'conferência', 'reconhecer', 'escolher raiz', 'ideia de'
+    ];
+    if (contextTokens.some((token) => label.includes(token))) return 'context';
+    if (structuralTokens.some((token) => label.includes(token))) return 'structural';
+    return String(learningType || '').toLowerCase() === 'comprehension' ? 'structural' : 'fluency';
+}
+function pickChallengePlanCandidate(candidates, used, fallback = []) {
+    const safeCandidates = Array.isArray(candidates) ? candidates : [];
+    const safeFallback = Array.isArray(fallback) ? fallback : [];
+    const firstUnused = safeCandidates.find((item) => item && !used.has(String(item.stageIndex)));
+    if (firstUnused) {
+        used.add(String(firstUnused.stageIndex));
+        return firstUnused;
+    }
+    const fallbackUnused = safeFallback.find((item) => item && !used.has(String(item.stageIndex)));
+    if (fallbackUnused) {
+        used.add(String(fallbackUnused.stageIndex));
+        return fallbackUnused;
+    }
+    return safeCandidates[0] || safeFallback[0] || null;
+}
+function getChallengeWeakStageFromRole(cons, role) {
+    const safeCons = cons && typeof cons === 'object' ? cons : null;
+    if (!safeCons || !Array.isArray(safeCons.plan)) return { stageIndex: null, stageLabel: '' };
+    const perStage = safeCons.perStage && typeof safeCons.perStage === 'object' ? safeCons.perStage : {};
+    const matches = safeCons.plan.filter((item) => String(item?.challengeRole || item?.validationRole || '').trim() === String(role || '').trim());
+    if (!matches.length) return { stageIndex: null, stageLabel: '' };
+    let weakest = matches[0];
+    let weakestAcc = Infinity;
+    matches.forEach((item) => {
+        const key = String(item?.stageIndex ?? '');
+        const rec = perStage[key] || {};
+        const asked = Math.max(0, Number(rec.asked) || 0);
+        const correct = Math.max(0, Number(rec.correct) || 0);
+        const acc = asked > 0 ? (correct / asked) : 0;
+        if (acc <= weakestAcc) {
+            weakest = item;
+            weakestAcc = acc;
+        }
+    });
+    return {
+        stageIndex: Number.isInteger(Number(weakest?.stageIndex)) ? Math.max(0, Number(weakest.stageIndex) || 0) : null,
+        stageLabel: String(weakest?.stageLabel || '').trim()
+    };
+}
+
 function pickSmartReviewStageIndex(operation, level, currentStageIndex) {
     const maxIdx = Math.max(0, Number(currentStageIndex) || 0);
     if (maxIdx <= 0) return 0;
@@ -10705,36 +11358,77 @@ function pickSmartReviewStageIndex(operation, level, currentStageIndex) {
     return Number.isInteger(picked) ? picked : Math.max(0, maxIdx - 1);
 }
 function buildLevelConsolidationPlan(operation, level) {
+    if (isChallengeMixOperation(operation)) {
+        const internalLevel = getChallengeLeagueInternalLevel(level);
+        const ops = getChallengeMixedOperationRotation(level);
+        const roles = ['fluency', 'structural', 'fluency', 'context', 'structural', 'transfer'];
+        return ops.slice(0, 6).map((op, idx) => {
+            const stages = getOperationTrailStages(op, internalLevel) || [];
+            const analyzed = stages.map((stage, stageIndex) => {
+                const learningType = inferStageLearningType(op, stage?.label || '');
+                const challengeRole = inferChallengeValidationRole(op, stage?.label || '', learningType);
+                return { stageIndex, stage, learningType, challengeRole };
+            });
+            const role = roles[idx] || 'fluency';
+            const pool = analyzed.filter((it) => it.challengeRole === role);
+            const base = pool.length ? pool : analyzed;
+            const picked = base[idx % Math.max(1, base.length)] || analyzed[0];
+            return {
+                seq: idx,
+                stageIndex: Math.max(0, Number(picked?.stageIndex) || 0),
+                stageLabel: `${formatOperationLabel(op)} • ${String(picked?.stage?.label || '').trim()}`,
+                learningType: String(picked?.learningType || 'fluency'),
+                challengeRole: role,
+                challengeRoleLabel: formatChallengeRoleLabel(role),
+                sourceRole: String(picked?.challengeRole || '').trim(),
+                forceStrategy: role === 'transfer',
+                allowBridge: role === 'transfer',
+                mixedOperation: op,
+                mixedLevel: internalLevel,
+                mixedStageLabel: String(picked?.stage?.label || '').trim()
+            };
+        });
+    }
     const stages = getOperationTrailStages(operation, level);
     if (!Array.isArray(stages) || !stages.length) return [];
     const analyzed = stages.map((stage, idx) => {
         const learningType = inferStageLearningType(operation, stage?.label || '');
         const weakness = computeSkillWeaknessScore(getOperationSkillReviewRecord(operation, level, idx));
-        return { stageIndex: idx, stage, learningType, weakness };
-    });
-    const byWeakness = analyzed.slice().sort((a, b) => b.weakness - a.weakness || a.stageIndex - b.stageIndex);
-    const fluency = byWeakness.filter((it) => it.learningType === 'fluency');
-    const comprehension = byWeakness.filter((it) => it.learningType === 'comprehension');
-    const target = Math.max(6, Math.min(8, analyzed.length >= 8 ? 8 : analyzed.length));
-    const plan = [];
-    const used = new Set();
-    const takeFrom = (arr, n) => {
-        for (const item of arr) {
-            if (plan.length >= target || n <= 0) break;
-            if (used.has(item.stageIndex)) continue;
-            plan.push({ stageIndex: item.stageIndex, stageLabel: item.stage?.label || '', learningType: item.learningType });
-            used.add(item.stageIndex);
-            n--;
-        }
+        const challengeRole = inferChallengeValidationRole(operation, stage?.label || '', learningType);
+        return { stageIndex: idx, stage, learningType, weakness, challengeRole };
+    }).sort((a, b) => b.weakness - a.weakness || a.stageIndex - b.stageIndex);
+    const byRole = {
+        fluency: analyzed.filter((it) => it.challengeRole === 'fluency'),
+        structural: analyzed.filter((it) => it.challengeRole === 'structural'),
+        context: analyzed.filter((it) => it.challengeRole === 'context')
     };
-    takeFrom(comprehension, Math.min(4, Math.max(2, comprehension.length ? Math.ceil(target / 2) : 0)));
-    takeFrom(fluency, Math.min(4, Math.max(2, fluency.length ? Math.ceil(target / 2) : 0)));
-    takeFrom(byWeakness, target - plan.length);
-    while (plan.length < target) {
-        const fallback = analyzed[plan.length % analyzed.length];
-        plan.push({ stageIndex: fallback.stageIndex, stageLabel: fallback.stage?.label || '', learningType: fallback.learningType });
-    }
-    return plan.slice(0, target).map((item, idx) => ({ ...item, seq: idx }));
+    const structuralPool = byRole.structural.concat(byRole.context).sort((a, b) => b.weakness - a.weakness || a.stageIndex - b.stageIndex);
+    const contextPool = byRole.context.length ? byRole.context : structuralPool;
+    const transferPool = structuralPool.length ? structuralPool : analyzed;
+    const used = new Set();
+    const blueprint = [
+        { role: 'fluency', source: byRole.fluency, fallback: analyzed },
+        { role: 'fluency', source: byRole.fluency, fallback: analyzed },
+        { role: 'structural', source: structuralPool, fallback: analyzed },
+        { role: 'structural', source: structuralPool, fallback: analyzed },
+        { role: 'context', source: contextPool, fallback: structuralPool.length ? structuralPool : analyzed },
+        { role: 'transfer', source: transferPool, fallback: analyzed, forceStrategy: true, allowBridge: true }
+    ];
+    const plan = blueprint.map((slot, idx) => {
+        const picked = pickChallengePlanCandidate(slot.source, used, slot.fallback) || analyzed[idx % analyzed.length];
+        return {
+            seq: idx,
+            stageIndex: Math.max(0, Number(picked?.stageIndex) || 0),
+            stageLabel: String(picked?.stage?.label || picked?.stageLabel || '').trim(),
+            learningType: String(picked?.learningType || inferStageLearningType(operation, picked?.stage?.label || '') || 'fluency'),
+            challengeRole: slot.role,
+            challengeRoleLabel: formatChallengeRoleLabel(slot.role),
+            sourceRole: String(picked?.challengeRole || '').trim(),
+            forceStrategy: !!slot.forceStrategy,
+            allowBridge: !!slot.allowBridge
+        };
+    });
+    return plan.slice(0, Math.max(1, Number(CHALLENGE_VALIDATION_CONFIG.totalItems) || 6));
 }
 function getConsolidationResult(operation, level, trail) {
     const cons = trail?.consolidation;
@@ -10742,32 +11436,238 @@ function getConsolidationResult(operation, level, trail) {
     const total = Math.max(0, Number(cons.asked) || 0);
     const correct = Math.max(0, Number(cons.correct) || 0);
     const accuracy = total > 0 ? (correct / total) : 0;
-    const targetAcc = Number(trail?.targetAccuracy || 0.8);
+    const targetAcc = Math.max(Number(trail?.targetAccuracy || 0.8), Number(CHALLENGE_VALIDATION_CONFIG.minOverallAccuracy || 0.8));
     const perStage = cons.perStage && typeof cons.perStage === 'object' ? cons.perStage : {};
+    const perRole = cons.perRole && typeof cons.perRole === 'object' ? cons.perRole : {};
+    const errorHistogram = cons.errorHistogram && typeof cons.errorHistogram === 'object' ? cons.errorHistogram : {};
+    const roleStats = {
+        fluency: { asked: Math.max(0, Number(perRole?.fluency?.asked) || 0), correct: Math.max(0, Number(perRole?.fluency?.correct) || 0) },
+        structural: { asked: Math.max(0, Number(perRole?.structural?.asked) || 0), correct: Math.max(0, Number(perRole?.structural?.correct) || 0) },
+        context: { asked: Math.max(0, Number(perRole?.context?.asked) || 0), correct: Math.max(0, Number(perRole?.context?.correct) || 0) },
+        transfer: { asked: Math.max(0, Number(perRole?.transfer?.asked) || 0), correct: Math.max(0, Number(perRole?.transfer?.correct) || 0) }
+    };
+    const structuralHit = roleStats.structural.correct >= 1;
+    const contextHit = roleStats.context.asked === 0 ? true : roleStats.context.correct >= 1;
+    const transferHit = roleStats.transfer.asked === 0 ? true : roleStats.transfer.correct >= 1;
+    const repeatedDominantEntry = Object.entries(errorHistogram).sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))[0] || null;
+    const repeatedDominantError = !!(CHALLENGE_VALIDATION_CONFIG.failOnRepeatedDominantError && repeatedDominantEntry && Number(repeatedDominantEntry[1] || 0) >= Number(CHALLENGE_VALIDATION_CONFIG.dominantErrorRepeatLimit || 2));
+    const usedSupport = Number(cons.assistedAsked || 0) > 0;
     let weakStageIndex = null;
-    let weakStageAccuracy = 1;
-    Object.keys(perStage).forEach((key) => {
-        const rec = perStage[key] || {};
+    let weakStageLabel = '';
+    let weakLearningType = '';
+    let weakStageAccuracy = null;
+    const registerWeakStage = (stageIndex, stageLabel) => {
+        if (!Number.isInteger(Number(stageIndex))) return;
+        weakStageIndex = Math.max(0, Number(stageIndex) || 0);
+        weakStageLabel = String(stageLabel || '').trim();
+        weakLearningType = inferStageLearningType(operation, weakStageLabel || '');
+        const rec = perStage[String(weakStageIndex)] || {};
         const asked = Math.max(0, Number(rec.asked) || 0);
         const hits = Math.max(0, Number(rec.correct) || 0);
-        if (!asked) return;
-        const acc = hits / asked;
-        if (acc < targetAcc && acc <= weakStageAccuracy) {
-            weakStageAccuracy = acc;
-            weakStageIndex = Math.max(0, Number(key) || 0);
-        }
-    });
+        weakStageAccuracy = asked > 0 ? (hits / asked) : null;
+    };
     const stages = getOperationTrailStages(operation, level) || [];
+    let failedRole = '';
+    let failedReason = '';
+    if (total < cons.plan.length) {
+        failedReason = 'O desafio ainda não foi concluído.';
+    } else if (accuracy < targetAcc) {
+        failedReason = `A precisão geral ficou em ${Math.round(accuracy * 100)}%, abaixo do mínimo de ${Math.round(targetAcc * 100)}%.`;
+        let localWeakIdx = null;
+        let localWeakAcc = 2;
+        Object.keys(perStage).forEach((key) => {
+            const rec = perStage[key] || {};
+            const asked = Math.max(0, Number(rec.asked) || 0);
+            const hits = Math.max(0, Number(rec.correct) || 0);
+            const acc = asked > 0 ? (hits / asked) : 0;
+            if (asked > 0 && acc <= localWeakAcc) {
+                localWeakAcc = acc;
+                localWeakIdx = Math.max(0, Number(key) || 0);
+            }
+        });
+        if (localWeakIdx != null) registerWeakStage(localWeakIdx, String(stages[localWeakIdx]?.label || ''));
+    } else if (CHALLENGE_VALIDATION_CONFIG.mustHitAtLeastOneStructural && !structuralHit) {
+        failedRole = 'structural';
+        failedReason = 'Acertou a rodada, mas não demonstrou compreensão estrutural da habilidade.';
+        const weak = getChallengeWeakStageFromRole(cons, 'structural');
+        registerWeakStage(weak.stageIndex, weak.stageLabel || String(stages[weak.stageIndex]?.label || ''));
+    } else if (CHALLENGE_VALIDATION_CONFIG.mustHitContext && !contextHit) {
+        failedRole = 'context';
+        failedReason = 'Faltou aplicar a ideia em uma variação contextual ou de aplicação.';
+        const weak = getChallengeWeakStageFromRole(cons, 'context');
+        registerWeakStage(weak.stageIndex, weak.stageLabel || String(stages[weak.stageIndex]?.label || ''));
+    } else if (CHALLENGE_VALIDATION_CONFIG.mustHitTransfer && !transferHit) {
+        failedRole = 'transfer';
+        failedReason = 'Faltou confirmar transferência: o aluno não sustentou o conceito em uma variação nova.';
+        const weak = getChallengeWeakStageFromRole(cons, 'transfer');
+        registerWeakStage(weak.stageIndex, weak.stageLabel || String(stages[weak.stageIndex]?.label || ''));
+    } else if (repeatedDominantError) {
+        failedReason = `O mesmo erro dominante apareceu de novo (${String(repeatedDominantEntry?.[0] || '').trim() || 'erro recorrente'}).`;
+        let localWeakIdx = null;
+        let localWeakAcc = 2;
+        Object.keys(perStage).forEach((key) => {
+            const rec = perStage[key] || {};
+            const asked = Math.max(0, Number(rec.asked) || 0);
+            const hits = Math.max(0, Number(rec.correct) || 0);
+            const acc = asked > 0 ? (hits / asked) : 0;
+            if (asked > 0 && acc <= localWeakAcc) {
+                localWeakAcc = acc;
+                localWeakIdx = Math.max(0, Number(key) || 0);
+            }
+        });
+        if (localWeakIdx != null) registerWeakStage(localWeakIdx, String(stages[localWeakIdx]?.label || ''));
+    } else if (CHALLENGE_VALIDATION_CONFIG.failIfSupportModeNotNormal && usedSupport) {
+        failedReason = 'Houve apoio guiado dentro do desafio; a validação precisa ser confirmada com autonomia.';
+    }
+    const passed = total >= cons.plan.length && accuracy >= targetAcc && !failedReason;
     return {
-        passed: total >= cons.plan.length && accuracy >= targetAcc && weakStageIndex == null,
+        passed,
+        validationPassed: passed,
         total,
         correct,
         accuracy,
         weakStageIndex,
-        weakStageLabel: weakStageIndex == null ? '' : String(stages[weakStageIndex]?.label || ''),
-        weakLearningType: weakStageIndex == null ? '' : inferStageLearningType(operation, stages[weakStageIndex]?.label || ''),
-        weakStageAccuracy: weakStageIndex == null ? null : weakStageAccuracy
+        weakStageLabel,
+        weakLearningType,
+        weakStageAccuracy,
+        roleStats,
+        structuralHit,
+        contextHit,
+        transferHit,
+        repeatedDominantError,
+        repeatedDominantEntry: repeatedDominantEntry ? { key: String(repeatedDominantEntry[0] || ''), count: Math.max(0, Number(repeatedDominantEntry[1] || 0)) } : null,
+        usedSupport,
+        independentAsked: Math.max(0, Number(cons.independentAsked) || 0),
+        assistedAsked: Math.max(0, Number(cons.assistedAsked) || 0),
+        failedRole,
+        failedReason
     };
+}
+function getDirectChallengeAvailability(operation, level, options = {}) {
+    const safeOperation = String(operation || '').trim();
+    const safeLevel = String(level || '').trim();
+    if (isChallengeMixOperation(safeOperation)) {
+        const unlocked = isChallengeModeUnlocked();
+        return { available: unlocked, operation: safeOperation, level: safeLevel || getCurrentChallengeLeagueLevel(), reason: unlocked ? '' : getChallengeUnlockMessage() };
+    }
+    if (!safeOperation || !safeLevel || (!FORCE_UNLOCK_CHALLENGE_FOR_TEST && !!gameState.isRapidMode) || !isMasteryTrailOperation(safeOperation)) {
+        return { available: false, reason: 'O Modo Desafio aparece apenas nas trilhas por domínio do Modo Estudo.' };
+    }
+    const stages = getOperationTrailStages(safeOperation, safeLevel) || [];
+    if (!Array.isArray(stages) || !stages.length) {
+        return { available: false, reason: 'Este nível não usa validação por desafio.' };
+    }
+    const currentStage = Math.max(0, Math.min(stages.length - 1, getSavedOperationStageUnlock(safeOperation, safeLevel, stages.length)));
+    const lastStageIndex = Math.max(0, stages.length - 1);
+    const forcedStageIndex = FORCE_UNLOCK_CHALLENGE_FOR_TEST ? lastStageIndex : currentStage;
+    const currentStageObj = stages[forcedStageIndex] || stages[currentStage] || stages[0];
+    const stageLabel = String(currentStageObj?.label || '').trim();
+    const masteryCfg = getOperationMasteryConfig(safeOperation, currentStageObj);
+    const targetQuestions = Math.max(1, Number(masteryCfg?.stageTarget) || Number(currentStageObj?.count) || 1);
+    const targetAccuracy = Number(masteryCfg?.targetAccuracy) || 0.8;
+    const record = getOperationSkillReviewRecord(safeOperation, safeLevel, forcedStageIndex);
+    const totalAsked = Math.max(0, Number(record?.totalAsked) || 0);
+    const totalCorrect = Math.max(0, Number(record?.totalCorrect) || 0);
+    const acc = totalAsked > 0 ? (totalCorrect / totalAsked) : 0;
+    const plan = buildLevelConsolidationPlan(safeOperation, safeLevel);
+    if (!plan.length) {
+        return { available: false, stageIndex: forcedStageIndex, stageLabel, reason: 'Não foi possível montar o plano do desafio.' };
+    }
+    if (FORCE_UNLOCK_CHALLENGE_FOR_TEST) {
+        return {
+            available: true,
+            forced: true,
+            reason: 'Modo Desafio liberado temporariamente para teste visual e jogável.',
+            operation: safeOperation,
+            level: safeLevel,
+            stageIndex: forcedStageIndex,
+            stageLabel,
+            targetQuestions,
+            targetAccuracy,
+            asked: totalAsked,
+            correct: totalCorrect,
+            accuracy: acc,
+            plan
+        };
+    }
+    if (currentStage < lastStageIndex) {
+        return {
+            available: false,
+            stageIndex: currentStage,
+            reason: `O desafio só aparece na etapa final. Primeiro chegue à etapa ${lastStageIndex + 1}/${stages.length}.`
+        };
+    }
+    if (totalAsked < targetQuestions || acc < targetAccuracy) {
+        return {
+            available: false,
+            stageIndex: currentStage,
+            stageLabel,
+            asked: totalAsked,
+            correct: totalCorrect,
+            targetQuestions,
+            targetAccuracy,
+            reason: `Antes do desafio, feche a etapa final com ${targetQuestions} questões e pelo menos ${Math.round(targetAccuracy * 100)}% de aproveitamento.`
+        };
+    }
+    const evidence = getStageEvidenceProfile(record, null, { operation: safeOperation, stageLabel, level: safeLevel });
+    const blocking = getBlockingTypicalErrorMeta(safeOperation, stageLabel, record, { operation: safeOperation, stageLabel, level: safeLevel });
+    const prereqGate = getStagePrerequisiteGate(safeOperation, safeLevel, stages, currentStage, stageLabel);
+    const supportMode = normalizeAdaptiveSupportMode(record?.lastSupportMode || 'normal');
+    const gateOk = evidence.independentReady && !evidence.supportHeavy && !blocking.isBlocking && (!prereqGate.required || prereqGate.ok) && supportMode === 'normal';
+    if (!gateOk) {
+        const reason = buildLevelGateMissingText({ evidence, blocking, prereqGate }) || 'ainda faltam evidências independentes desta etapa';
+        return { available: false, stageIndex: currentStage, stageLabel, reason };
+    }
+    return {
+        available: true,
+        operation: safeOperation,
+        level: safeLevel,
+        stageIndex: currentStage,
+        stageLabel,
+        targetQuestions,
+        targetAccuracy,
+        plan
+    };
+}
+function activateChallengeModeForTrail(trail, options = {}) {
+    const silent = !!options.silent;
+    if (!trail || !trail.masteryMode || trail.consolidationMode) return false;
+    const availability = getDirectChallengeAvailability(trail.operation, trail.level, { silent: true });
+    if (!availability.available) {
+        if (!silent) {
+            const missingText = availability.reason || 'ainda faltam evidências independentes desta etapa';
+            showFeedbackControlled(`🧠 Modo Desafio ainda bloqueado: ${missingText}. Volte ao Modo Estudo e confirme domínio real antes de validar o nível.`, 'warning', gameState.isRapidMode ? 6200 : 8200);
+        }
+        return false;
+    }
+    const plan = Array.isArray(availability.plan) ? availability.plan : buildLevelConsolidationPlan(trail.operation, trail.level);
+    if (!plan.length) return false;
+    trail.currentStageIndex = Math.max(0, Number(availability.stageIndex) || 0);
+    trail.currentStageLabel = String(availability.stageLabel || trail.currentStageLabel || '').trim();
+    trail.consolidationMode = true;
+    trail.consolidation = {
+        plan,
+        index: 0,
+        asked: 0,
+        correct: 0,
+        perStage: {},
+        perRole: {},
+        errorHistogram: {},
+        independentAsked: 0,
+        independentCorrect: 0,
+        assistedAsked: 0,
+        assistedCorrect: 0
+    };
+    trail.supportMode = 'normal';
+    trail.supportEscalations = 0;
+    trail.supportHint = '';
+    trail.supportLaneRemaining = 0;
+    trail.supportLaneReason = '';
+    trail.stageType = 'mixed';
+    gameState.totalQuestions = Math.max(1, plan.length);
+    gameState.questionNumber = 0;
+    if (!silent) showFeedbackControlled('🧩 Modo Desafio iniciado: agora o app vai validar compreensão real com fluência, estrutura, aplicação e transferência.', 'info', gameState.isRapidMode ? 5600 : 7600);
+    return true;
 }
 function maybeStartLevelConsolidationRound() {
     const trail = gameState.operationTrail;
@@ -10780,23 +11680,7 @@ function maybeStartLevelConsolidationRound() {
     const target = Math.max(1, Number(trail.stageTarget) || 1);
     const acc = asked > 0 ? (correct / asked) : 0;
     if (asked < target || acc < Number(trail.targetAccuracy || 0.8)) return false;
-    const plan = buildLevelConsolidationPlan(trail.operation, trail.level);
-    if (!plan.length) return false;
-    trail.consolidationMode = true;
-    trail.consolidation = {
-        plan,
-        index: 0,
-        asked: 0,
-        correct: 0,
-        perStage: {}
-    };
-    trail.supportMode = 'normal';
-    trail.supportEscalations = 0;
-    trail.supportHint = '';
-    trail.stageType = 'mixed';
-    gameState.totalQuestions = Math.max(Number(gameState.totalQuestions || 0), Number(gameState.questionNumber || 0)) + plan.length;
-    showFeedbackControlled('🧩 Prova de consolidação iniciada: agora o app vai misturar habilidades de fluência e compreensão para validar o nível.', 'info', gameState.isRapidMode ? 5600 : 7600);
-    return true;
+    return activateChallengeModeForTrail(trail, { silent: false });
 }
 function computeMasterySessionTotalQuestions(stageCount, currentStageIndex, reviewEvery = 3) {
     const mainCount = Math.max(1, Number(stageCount) || 1);
@@ -10980,15 +11864,12 @@ function buildAdaptiveSupportQuestion(operation, stageLabel, supportMode, stageI
             const pair = randSubtractionWithBorrow(hard ? 12 : 18, hard ? 30 : 54, 1, hard ? 9 : 18);
             return qSubtraction(pair[0], pair[1], stageLabel);
         }
-        if (label.includes('resultado faltante')) {
-            return buildSubtractionMissingResultAuditQuestion(stageLabel, level || gameState.currentLevel || '');
-        }
-        if (label.includes('minuendo desconhecido')) {
+        if (label.includes('minuendo desconhecido') || label.includes('número que falta')) {
             const diff = hard ? randomInt(2, 15) : randomInt(5, 40);
             const sub = hard ? randomInt(0, 9) : randomInt(3, 25);
             return qUnknownMinuend(diff, sub, stageLabel);
         }
-        if (label.includes('subtraendo desconhecido') || label.includes('número que falta') || label.includes('falta')) {
+        if (label.includes('subtraendo desconhecido') || label.includes('resultado faltante') || label.includes('falta')) {
             const minuend = hard ? randomInt(8, 20) : randomInt(15, 60);
             const diff = hard ? randomInt(1, minuend - 1) : randomInt(4, minuend - 2);
             return qUnknownSubtrahend(minuend, diff, stageLabel);
@@ -11020,18 +11901,6 @@ function buildAdaptiveSupportQuestion(operation, stageLabel, supportMode, stageI
             const quotient = hard ? randomInt(2, 5) : randomInt(2, 8);
             return qDivisionFindDividend(divisor, quotient, stageLabel);
         }
-        if (label.includes('interpretar o resto')) {
-            return buildDivisionRemainderInterpretationAuditQuestion(stageLabel, level || gameState.currentLevel || '');
-        }
-        if (label.includes('escolher entre quociente e resto')) {
-            return buildDivisionQuotientOrRemainderChoiceAuditQuestion(stageLabel, level || gameState.currentLevel || '');
-        }
-        if (label.includes('comparar divisão exata e não exata')) {
-            return buildDivisionExactVsNonExactCompareQuestion(stageLabel, level || gameState.currentLevel || '');
-        }
-        if (label.includes('contextual') || label.includes('contexto')) {
-            return buildDivisionContextAuditQuestion(stageLabel, level || gameState.currentLevel || '');
-        }
         if (label.includes('resto')) {
             const divisor = randFrom(hard ? [2,3,4] : [2,3,4,5]);
             const quotient = hard ? randomInt(2, 5) : randomInt(2, 7);
@@ -11055,9 +11924,6 @@ function buildAdaptiveSupportQuestion(operation, stageLabel, supportMode, stageI
         if (code.includes('power_as_multiplication') || code.includes('power_as_sum') || code.includes('power_exponent')) {
             return qPowerExpanded(randFrom(hard ? [2,3] : [2,3,4]), hard ? 2 : randFrom([2,3]), stageLabel);
         }
-        if (label.includes('comparar valores de potências') || label.includes('comparação entre potências')) return buildPowerCompareAuditQuestion(stageLabel, level || gameState.currentLevel || '');
-        if (label.includes('relacionar potência e padrão')) return buildPowerPatternAuditQuestion(stageLabel, level || gameState.currentLevel || '');
-        if (label.includes('valor faltante em potência')) return buildPowerMissingBaseAuditQuestion(stageLabel);
         if (label.includes('expoente 0')) return qPower(randFrom([2,3,4,5]), 0, stageLabel);
         if (label.includes('expoente 1')) return qPower(randFrom([2,3,4,5,6]), 1, stageLabel);
         if (label.includes('cubo')) return qPower(randFrom(hard ? [2,3] : [2,3,4]), 3, stageLabel);
@@ -11083,7 +11949,6 @@ function buildAdaptiveSupportQuestion(operation, stageLabel, supportMode, stageI
         return qRoot(randIntFromList(hard ? [4,9,16,25,36] : [4,9,16,25,36,49,64,81,100]), stageLabel);
     }
     if (operation === 'multiplication') {
-        if (label.includes('padrões das tabuadas 2 e 5')) return buildMultiplicationPatternAuditQuestion(stageLabel, level || gameState.currentLevel || '');
         if (label.includes('grupos')) return qEqualGroups(hard ? randomInt(2,4) : randomInt(2,5), hard ? randomInt(2,3) : randomInt(2,5), stageLabel);
         if (label.includes('soma repetida')) return qRepeatedAddition(randFrom(hard ? [2,3] : [2,3,4,5]), hard ? randomInt(2,3) : randomInt(2,4), stageLabel);
         if (label.includes('dobro') || label.includes('triplo')) return qDoubleTriple(hard ? randomInt(2,6) : randomInt(2,9), label.includes('triplo') && !hard ? 3 : randFrom(hard ? [2] : [2,3]), stageLabel);
@@ -12933,7 +13798,7 @@ function startDiagnosticSession(operation, level, options = {}) {
         : !!gameState.isRapidMode;
     gameState.currentOperation = operation;
     gameState.currentLevel = level;
-    try { updatePetHomePrefs({ operation, level, mode: gameState.isRapidMode ? 'rapid' : 'study' }); } catch (_) {}
+    try { updatePetHomePrefs({ operation, level, mode: getSelectedPlayMode() }); } catch (_) {}
     gameState.operationTrail = { operation: '', level: '', key: '', startIndex: 0, bankSize: 0, totalStages: plan.length };
     gameState.isGameActive = true;
     gameState.isDiagnosticMode = true;
@@ -13047,7 +13912,7 @@ function buildQuestionCounterLabel() {
         const currentType = getLearningTypeLabel(gameState.currentQuestion?.learningType || t.stageType || 'fluency');
         if (t.consolidationMode && t.consolidation && Array.isArray(t.consolidation.plan)) {
             const consIdx = Math.min(Math.max(0, Number(t.consolidation.index || 0)), Math.max(0, t.consolidation.plan.length - 1));
-            return `Consolidação ${consIdx + 1}/${Math.max(1, t.consolidation.plan.length)} • ${currentType}`;
+            return `Desafio ${consIdx + 1}/${Math.max(1, t.consolidation.plan.length)} • ${currentType}`;
         }
         return `Etapa ${Number(t.currentStageIndex || 0) + 1}/${Number(t.totalStages || 1)} • ${currentType} • Questão ${gameState.questionNumber}/${totalDisplay}`;
     }
@@ -13771,102 +14636,6 @@ function randPerfectSquare(rootMin, rootMax) {
     const root = randomInt(rootMin, rootMax);
     return [root * root, root];
 }
-function getPlaceDigits(n, places = 3) {
-    const safe = String(Math.max(0, Math.floor(Math.abs(Number(n) || 0)))).padStart(Math.max(1, Number(places) || 3), '0');
-    return safe.slice(-Math.max(1, Number(places) || 3)).split('').map((d) => Number(d));
-}
-function getCarryProfile(a, b, places = 3) {
-    const da = getPlaceDigits(a, places);
-    const db = getPlaceDigits(b, places);
-    const profile = Array.from({ length: da.length }, () => false);
-    let carry = 0;
-    for (let i = da.length - 1; i >= 0; i--) {
-        const sum = da[i] + db[i] + carry;
-        profile[i] = sum >= 10;
-        carry = profile[i] ? 1 : 0;
-    }
-    return profile;
-}
-function hasNoCarryAnywhere(a, b, places = 3) {
-    return getCarryProfile(a, b, places).every((it) => !it);
-}
-function hasCarryAtUnitsOnly(a, b, places = 3) {
-    const profile = getCarryProfile(a, b, places);
-    const unitsIdx = profile.length - 1;
-    if (unitsIdx < 0) return false;
-    return profile[unitsIdx] && profile.slice(0, unitsIdx).every((it) => !it);
-}
-function hasCarryAtTensOnly(a, b, places = 3) {
-    const profile = getCarryProfile(a, b, places);
-    if (profile.length < 2) return false;
-    const unitsIdx = profile.length - 1;
-    const tensIdx = profile.length - 2;
-    return !profile[unitsIdx] && profile[tensIdx] && profile.slice(0, tensIdx).every((it) => !it);
-}
-function getBorrowProfile(a, b, places = 3) {
-    const da = getPlaceDigits(a, places);
-    const db = getPlaceDigits(b, places);
-    const profile = Array.from({ length: da.length }, () => false);
-    let borrow = 0;
-    for (let i = da.length - 1; i >= 0; i--) {
-        const top = da[i] - borrow;
-        profile[i] = top < db[i];
-        borrow = profile[i] ? 1 : 0;
-    }
-    return profile;
-}
-function hasNoBorrowAnywhere(a, b, places = 3) {
-    return getBorrowProfile(a, b, places).every((it) => !it);
-}
-function hasBorrowAtUnitsOnly(a, b, places = 3) {
-    const profile = getBorrowProfile(a, b, places);
-    const unitsIdx = profile.length - 1;
-    if (unitsIdx < 0) return false;
-    return profile[unitsIdx] && profile.slice(0, unitsIdx).every((it) => !it);
-}
-function hasBorrowAtTensOnly(a, b, places = 3) {
-    const profile = getBorrowProfile(a, b, places);
-    if (profile.length < 2) return false;
-    const unitsIdx = profile.length - 1;
-    const tensIdx = profile.length - 2;
-    return !profile[unitsIdx] && profile[tensIdx] && profile.slice(0, tensIdx).every((it) => !it);
-}
-function pickStructuredPair(buildPair, predicate, attempts = 800) {
-    for (let i = 0; i < attempts; i++) {
-        const pair = buildPair();
-        if (!Array.isArray(pair) || pair.length < 2) continue;
-        const a = Number(pair[0]);
-        const b = Number(pair[1]);
-        if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
-        if (predicate(a, b)) return [a, b];
-    }
-    return Array.isArray(buildPair()) ? buildPair() : [0, 0];
-}
-function shuffleNumericOptions(list, limit = 4) {
-    const unique = [];
-    const seen = new Set();
-    (Array.isArray(list) ? list : []).forEach((value) => {
-        const n = Math.round(Number(value));
-        if (!Number.isFinite(n) || seen.has(n)) return;
-        seen.add(n);
-        unique.push(n);
-    });
-    for (let i = unique.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [unique[i], unique[j]] = [unique[j], unique[i]];
-    }
-    return unique.slice(0, Math.max(1, Number(limit) || 4));
-}
-function applyCustomQuestionOptions(question, options) {
-    if (!question || typeof question !== 'object') return question;
-    const resolved = shuffleNumericOptions(options, 4);
-    if (resolved.length >= 2) {
-        question.options = resolved.slice();
-        question.voiceOptions = resolved.slice();
-        question.distractorMeta = [];
-    }
-    return question;
-}
 function makeStage(label, count, gen) {
     return { label, count, gen };
 }
@@ -14133,127 +14902,6 @@ function buildPowerMissingBaseAuditQuestion(label) {
     const q = qPowerFindBase(base ** exp, exp, label);
     q.auditStageVariant = 'power-missing-base';
     return refreshQuestionDistractors(q, { strategyFamily: 'inverse-power', studyDistractorsOnly: !gameState.isRapidMode });
-}
-function buildSubtractionMissingResultAuditQuestion(label, level = gameState.currentLevel || '') {
-    const band = getAuditLevelBand(level);
-    const preset = ({
-        apprentice: { a: [4, 18], b: [1, 9] },
-        easy: { a: [12, 60], b: [2, 25] },
-        medium: { a: [120, 480], b: [15, 170] },
-        advanced: { a: [250, 1400], b: [30, 450] }
-    })[band] || { a: [20, 120], b: [3, 35] };
-    const minuend = randomInt(preset.a[0], preset.a[1]);
-    const sub = randomInt(preset.b[0], Math.min(preset.b[1], Math.max(preset.b[0], minuend - 1)));
-    const answer = minuend - sub;
-    const q = buildQuestionPayload('subtraction', minuend, sub, answer, `Qual é o resultado de ${minuend} - ${sub}`, `qual é o resultado de ${minuend} menos ${sub}`, label);
-    q.auditStageVariant = 'subtraction-missing-result';
-    return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
-}
-function buildDivisionRemainderInterpretationAuditQuestion(label, level = gameState.currentLevel || '') {
-    const preset = pickAuditCollection(level, {
-        apprentice: { divisor: [2, 4], quotient: [2, 5] },
-        easy: { divisor: [3, 6], quotient: [3, 8] },
-        medium: { divisor: [4, 8], quotient: [4, 12] },
-        advanced: { divisor: [5, 10], quotient: [5, 18] }
-    });
-    const divisor = randomInt(preset.divisor[0], preset.divisor[1]);
-    const quotient = randomInt(preset.quotient[0], preset.quotient[1]);
-    const remainder = randomInt(1, Math.max(1, divisor - 1));
-    const total = divisor * quotient + remainder;
-    const pair = pickAuditPair([
-        ['Lia', 'figurinhas', 'Quantas'],
-        ['Noah', 'peças', 'Quantas'],
-        ['Iris', 'balas', 'Quantas'],
-        ['Ravi', 'cartas', 'Quantas']
-    ]);
-    const q = buildQuestionPayload('division', total, divisor, remainder, `${pair.name} separou ${total} ${pair.item} em grupos de ${divisor}. ${pair.quantWord} ${pair.item} sobram sem completar outro grupo`, `${pair.name} separou ${total} ${pair.item} em grupos de ${divisor}. ${pair.quantWord.toLowerCase()} ${pair.item} sobram sem completar outro grupo`, label);
-    q.auditStageVariant = 'division-remainder-interpretation';
-    return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
-}
-function buildDivisionQuotientOrRemainderChoiceAuditQuestion(label, level = gameState.currentLevel || '') {
-    const preset = pickAuditCollection(level, {
-        apprentice: { divisor: [2, 4], quotient: [2, 5] },
-        easy: { divisor: [3, 6], quotient: [3, 8] },
-        medium: { divisor: [4, 8], quotient: [4, 12] },
-        advanced: { divisor: [5, 10], quotient: [5, 18] }
-    });
-    const divisor = randomInt(preset.divisor[0], preset.divisor[1]);
-    const quotient = randomInt(preset.quotient[0], preset.quotient[1]);
-    const askRemainder = Math.random() < 0.5;
-    const remainder = askRemainder ? randomInt(1, Math.max(1, divisor - 1)) : 0;
-    const total = divisor * quotient + remainder;
-    const pair = pickAuditPair([
-        ['Ana', 'adesivos', 'Quantos'],
-        ['Bia', 'livros', 'Quantos'],
-        ['Caio', 'pontos', 'Quantos'],
-        ['Davi', 'cartões', 'Quantos']
-    ]);
-    const question = askRemainder
-        ? `${pair.name} organizou ${total} ${pair.item} em caixas com ${divisor} em cada uma. ${pair.quantWord} ${pair.item} sobram sem completar outra caixa`
-        : `${pair.name} organizou ${total} ${pair.item} em caixas com ${divisor} em cada uma. Quantas caixas completas consegue montar`;
-    const voice = askRemainder
-        ? `${pair.name} organizou ${total} ${pair.item} em caixas com ${divisor} em cada uma. ${pair.quantWord.toLowerCase()} ${pair.item} sobram sem completar outra caixa`
-        : `${pair.name} organizou ${total} ${pair.item} em caixas com ${divisor} em cada uma. Quantas caixas completas consegue montar`;
-    const q = buildQuestionPayload('division', total, divisor, askRemainder ? remainder : quotient, question, voice, label);
-    q.auditStageVariant = askRemainder ? 'division-choice-remainder' : 'division-choice-quotient';
-    return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
-}
-function buildDivisionExactVsNonExactCompareQuestion(label, level = gameState.currentLevel || '') {
-    const preset = pickAuditCollection(level, {
-        apprentice: { divisor: [2, 4], quotient: [2, 5] },
-        easy: { divisor: [3, 6], quotient: [3, 8] },
-        medium: { divisor: [4, 8], quotient: [4, 12] },
-        advanced: { divisor: [5, 10], quotient: [5, 18] }
-    });
-    const divisor = randomInt(preset.divisor[0], preset.divisor[1]);
-    const quotient = randomInt(preset.quotient[0], preset.quotient[1]);
-    const exact = divisor * quotient;
-    const remainder = randomInt(1, Math.max(1, divisor - 1));
-    const nonExact = exact + remainder;
-    const q = buildQuestionPayload('division', exact, divisor, exact, `Compare ${exact} ÷ ${divisor} e ${nonExact} ÷ ${divisor}. Qual divisão é exata`, `compare ${exact} dividido por ${divisor} e ${nonExact} dividido por ${divisor}. Qual divisão é exata`, label);
-    q.auditStageVariant = 'division-exact-vs-nonexact';
-    applyCustomQuestionOptions(q, [exact, nonExact, quotient, remainder]);
-    return q;
-}
-function buildPowerCompareAuditQuestion(label, level = gameState.currentLevel || '') {
-    const pairs = [
-        [2, 3, 3, 2],
-        [2, 4, 4, 2],
-        [3, 3, 2, 5],
-        [5, 2, 2, 5],
-        [2, 5, 3, 3],
-        [4, 3, 2, 6]
-    ];
-    const [baseA, expA, baseB, expB] = randFrom(pairs);
-    const valueA = baseA ** expA;
-    const valueB = baseB ** expB;
-    const askGreater = Math.random() < 0.5;
-    const answer = askGreater ? Math.max(valueA, valueB) : Math.min(valueA, valueB);
-    const prompt = `Compare ${baseA}${toSuperscript(expA)} e ${baseB}${toSuperscript(expB)}. Qual é o ${askGreater ? 'maior' : 'menor'} valor`;
-    const q = buildQuestionPayload('potenciacao', baseA, expA, answer, prompt, prompt.toLowerCase(), label);
-    q.auditStageVariant = 'power-compare';
-    applyCustomQuestionOptions(q, [valueA, valueB, answer + (askGreater ? -1 : 1), answer + (askGreater ? 4 : -4)]);
-    return q;
-}
-function buildPowerPatternAuditQuestion(label, level = gameState.currentLevel || '') {
-    const base = randFrom([2, 3, 4, 5]);
-    const startExp = randFrom([2, 3]);
-    const values = [base ** startExp, base ** (startExp + 1), base ** (startExp + 2)];
-    const answer = base ** (startExp + 3);
-    const prompt = `Observe a sequência ${values.join(', ')}. Ela segue potências de base ${base}. Qual é o próximo valor`;
-    const q = buildQuestionPayload('potenciacao', base, startExp, answer, prompt, prompt.toLowerCase(), label);
-    q.auditStageVariant = 'power-pattern';
-    return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
-}
-function buildMultiplicationPatternAuditQuestion(label, level = gameState.currentLevel || '') {
-    const base = randFrom([2, 5]);
-    const start = randFrom([1, 2, 3]);
-    const seq = [base * start, base * (start + 1), base * (start + 2)];
-    const answer = base * (start + 3);
-    const prompt = `Na tabuada do ${base}, a sequência é ${seq.join(', ')}, __. Qual número falta`;
-    const q = buildQuestionPayload('multiplication', base, start + 3, answer, prompt, prompt.toLowerCase(), label);
-    q.auditStageVariant = 'multiplication-pattern';
-    return refreshQuestionDistractors(q, { studyDistractorsOnly: !gameState.isRapidMode });
 }
 function buildAdditionContextAuditQuestion(label, level = gameState.currentLevel || '') {
     const preset = pickAuditCollection(level, {
@@ -14529,9 +15177,8 @@ function getQuestionBankAuditCandidateBuilders(operation, level, stageLabel, fal
         if (has('contexto', 'situações-problema')) add(() => buildSubtractionContextAuditQuestion(stageLabel, level));
         if (has('diferença', 'interpretação da diferença')) add(() => buildSubtractionDifferenceAuditQuestion(stageLabel, level));
         if (has('estratégias mentais')) add(() => buildSubtractionMentalAuditQuestion(stageLabel, level));
-        if (has('resultado faltante')) add(() => buildSubtractionMissingResultAuditQuestion(stageLabel, level));
         if (has('quanto falta')) add(() => buildSubtractionUnknownSubtrahendAuditQuestion(stageLabel, level));
-        if (has('número inicial', 'minuendo desconhecido')) add(() => buildSubtractionUnknownMinuendAuditQuestion(stageLabel, level));
+        if (has('número inicial', 'minuendo desconhecido', 'resultado faltante')) add(() => buildSubtractionUnknownMinuendAuditQuestion(stageLabel, level));
         if (has('subtraendo desconhecido', 'número que falta')) add(() => buildSubtractionUnknownSubtrahendAuditQuestion(stageLabel, level));
     }
     if (operation === 'multiplication') {
@@ -14539,29 +15186,21 @@ function getQuestionBankAuditCandidateBuilders(operation, level, stageLabel, fal
         if (has('contextos multiplicativos')) add(() => buildMultiplicationContextAuditQuestion(stageLabel, level));
         if (has('dobrar para multiplicar')) add(() => buildMultiplicationDoublingAuditQuestion(stageLabel));
         if (has('distributiva')) add(() => buildMultiplicationDistributiveAuditQuestion(stageLabel));
-        if (has('padrões das tabuadas 2 e 5', 'tabuadas 2 e 5')) add(() => buildMultiplicationPatternAuditQuestion(stageLabel, level));
     }
     if (operation === 'division') {
         if (has('relação com multiplicação', 'relação divisão', 'múltiplos e divisores', 'conferência pela multiplicação')) {
             add(() => buildDivisionRelationAuditQuestion(stageLabel));
         }
-        if (has('contexto', 'contextual')) add(() => buildDivisionContextAuditQuestion(stageLabel, level));
-        if (has('interpretar o resto')) add(() => buildDivisionRemainderInterpretationAuditQuestion(stageLabel, level));
-        if (has('escolher entre quociente e resto')) add(() => buildDivisionQuotientOrRemainderChoiceAuditQuestion(stageLabel, level));
-        if (has('resto')) add(() => buildDivisionRemainderAuditQuestion(stageLabel, level));
+        if (has('contexto')) add(() => buildDivisionContextAuditQuestion(stageLabel, level));
+        if (has('resto', 'escolher entre quociente e resto')) add(() => buildDivisionRemainderAuditQuestion(stageLabel, level));
         if (has('estimativa do quociente')) add(() => buildDivisionEstimateAuditQuestion(stageLabel));
-        if (has('comparar divisão exata e não exata')) add(() => buildDivisionExactVsNonExactCompareQuestion(stageLabel, level));
-        if (has('erro comum', 'erros comuns')) add(() => buildDivisionErrorAuditQuestion(stageLabel, level));
+        if (has('erro comum', 'erros comuns', 'comparar divisão exata e não exata')) add(() => buildDivisionErrorAuditQuestion(stageLabel, level));
     }
     if (operation === 'potenciacao') {
-        if (has('comparar valores de potências', 'comparação entre potências')) {
-            add(() => buildPowerCompareAuditQuestion(stageLabel, level));
-        }
-        if (has('comparar potência e multiplicação', 'comparar potência e produto', 'reconhecer escrita expandida', 'potência expandida', 'potência em expressão curta')) {
+        if (has('comparar potência e multiplicação', 'comparar potência e produto', 'comparar valores de potências', 'reconhecer escrita expandida', 'potência expandida', 'potência em expressão curta')) {
             add(() => buildPowerExpandedAuditQuestion(stageLabel));
         }
-        if (has('relacionar potência e padrão')) add(() => buildPowerPatternAuditQuestion(stageLabel, level));
-        if (has('completar potência', 'valor faltante em potência', 'valor faltante em potência simples')) {
+        if (has('completar potência', 'valor faltante em potência')) {
             add(() => buildPowerMissingBaseAuditQuestion(stageLabel));
         }
         if (has('erro comum')) add(() => buildPowerErrorAuditQuestion(stageLabel));
@@ -14688,7 +15327,7 @@ function getOperationTrailStages(operation, level) {
                 makeStage('Grupos iguais até 5', 10, () => qEqualGroups(randomInt(2,5), randomInt(2,5), 'Grupos iguais até 5')),
                 makeStage('Soma repetida até 5', 10, () => qRepeatedAddition(randFrom([2,3,4,5]), randomInt(2,5), 'Soma repetida até 5')),
                 makeStage('Comutatividade', 10, () => { const a=randFrom([2,3,4,5]); const b=randomInt(1,10); return Math.random() < 0.5 ? qMultiplicationBasic(a, b, 'Comutatividade') : qMultiplicationBasic(b, a, 'Comutatividade'); }),
-                makeStage('Padrões das tabuadas 2 e 5', 10, () => buildMultiplicationPatternAuditQuestion('Padrões das tabuadas 2 e 5', gameState.currentLevel || 'easy')),
+                makeStage('Padrões das tabuadas 2 e 5', 10, () => qMultiplicationBasic(randFrom([2,5]), randomInt(1,10), 'Padrões das tabuadas 2 e 5')),
                 makeStage('Revisão mista do nível fácil', 10, () => { const pool=[
                     () => qMultiplicationBasic(randFrom([1,2,3,4,5]), randomInt(1,10), 'Revisão mista do nível fácil'),
                     () => qEqualGroups(randomInt(2,5), randomInt(2,5), 'Revisão mista do nível fácil'),
@@ -14755,8 +15394,8 @@ function getOperationTrailStages(operation, level) {
                 makeStage('Domínio final', 5, () => { const pool=[() => { const a=randomInt(0,12), b=randomInt(0,12); return qAddition(a,b,'Domínio final'); }, () => { const total=randomInt(8,20), known=randomInt(1,total-1); return qAdditionMissing(total, known, 'Domínio final', Math.random()<0.5); }, () => { const a=randomInt(1,6), b=randomInt(1,6), c=randomInt(1,6); return qAddition3(a,b,c,'Domínio final'); }]; return randFrom(pool)(); })
             ],
             easy: [
-                makeStage('Somar até 10 sem reagrupamento', 10, () => { const a=randomInt(0,9), b=randomInt(0,9-a); return qAddition(a,b,'Somar até 10 sem reagrupamento'); }),
-                makeStage('Somar até 20 sem reagrupamento', 10, () => { let a,b; do { a=randomInt(0,19); b=randomInt(0,20-a); } while (((a % 10) + (b % 10)) >= 10); return qAddition(a,b,'Somar até 20 sem reagrupamento'); }),
+                makeStage('Somar até 10 sem reagrupamento', 10, () => { const a=randomInt(0,9), b=randomInt(0,10-a); return qAddition(a,b,'Somar até 10 sem reagrupamento'); }),
+                makeStage('Somar até 20 sem reagrupamento', 10, () => { const a=randomInt(0,19), b=randomInt(0,20-a); return qAddition(a,b,'Somar até 20 sem reagrupamento'); }),
                 makeStage('Adição com dezenas exatas', 10, () => { const a=randFrom([10,20,30,40,50]), b=randFrom([10,20,30,40]); return qAddition(a,b,'Adição com dezenas exatas'); }),
                 makeStage('2 dígitos + 1 dígito sem reagrupamento', 10, () => { const [a,b]=randAdditionNoCarry(10,89,1,9); return qAddition(a,b,'2 dígitos + 1 dígito sem reagrupamento'); }),
                 makeStage('2 dígitos + 1 dígito com reagrupamento', 10, () => { const [a,b]=randAdditionWithCarry(10,89,1,9); return qAddition(a,b,'2 dígitos + 1 dígito com reagrupamento'); }),
@@ -14767,9 +15406,9 @@ function getOperationTrailStages(operation, level) {
                 makeStage('Domínio final do nível', 10, () => { const pool=[() => { const [a,b]=randAdditionWithCarry(15,79,5,49); return qAddition(a,b,'Domínio final do nível'); }, () => { const [a,b]=randAdditionNoCarry(10,89,1,9); return qAddition(a,b,'Domínio final do nível'); }, () => { const a=randomInt(1,9), b=randomInt(1,9), c=randomInt(1,9); return qAddition3(a,b,c,'Domínio final do nível'); }]; return randFrom(pool)(); })
             ],
             medium: [
-                makeStage('Centenas sem reagrupamento', 10, () => { const [a,b]=pickStructuredPair(() => [randomInt(100,499), randomInt(100,299)], (x,y) => hasNoCarryAnywhere(x,y,3)); return qAddition(a,b,'Centenas sem reagrupamento'); }),
+                makeStage('Centenas sem reagrupamento', 10, () => { const [a,b]=randAdditionNoCarry(100,499,100,299); return qAddition(a,b,'Centenas sem reagrupamento'); }),
                 makeStage('Centenas com reagrupamento nas unidades', 10, () => { const tensA=randFrom([100,120,130,140,210,320]); const unitA=randomInt(1,8); const unitB=randomInt(10-unitA,9); const a=tensA+unitA; const b=randFrom([10,20,30,40,110,120])+unitB; return qAddition(a,b,'Centenas com reagrupamento nas unidades'); }),
-                makeStage('Centenas com reagrupamento nas dezenas', 10, () => { const [a,b]=pickStructuredPair(() => { const hundredsA=randFrom([100,200,300,400,500]); const hundredsB=randFrom([100,200,300]); const tensA=randFrom([20,30,40,50]); const tensB=randFrom([50,60,70]); return [hundredsA+tensA+randomInt(0,4), hundredsB+tensB+randomInt(0,4)]; }, (x,y) => hasCarryAtTensOnly(x,y,3)); return qAddition(a,b,'Centenas com reagrupamento nas dezenas'); }),
+                makeStage('Centenas com reagrupamento nas dezenas', 10, () => { const hundredsA=randFrom([100,200,300,400,500]); const hundredsB=randFrom([100,200,300]); const tensA=randFrom([20,30,40,50]); const tensB=randFrom([50,60,70]); const a=hundredsA+tensA+randomInt(0,4); const b=hundredsB+tensB+randomInt(0,4); return qAddition(a,b,'Centenas com reagrupamento nas dezenas'); }),
                 makeStage('Soma com 3 parcelas e reagrupamento', 10, () => { const a=randomInt(15,49), b=randomInt(16,39), c=randomInt(11,29); return qAddition3(a,b,c,'Soma com 3 parcelas e reagrupamento'); }),
                 makeStage('Completar parcela faltante', 10, () => { const total=randomInt(120,450), known=randomInt(20,total-20); return qAdditionMissing(total, known, 'Completar parcela faltante', Math.random()<0.5); }),
                 makeStage('Adição por decomposição', 10, () => { const base=randFrom([100,200,300,400]); const tens=randFrom([20,30,40,50]); const units=randomInt(1,9); const a=base+tens+units; const b=randFrom([10,20,30,40])+randomInt(1,9); return qAddition(a,b,'Adição por decomposição'); }),
@@ -14797,7 +15436,7 @@ function getOperationTrailStages(operation, level) {
                 makeStage('Tirar até 10', 5, () => { const a=randomInt(2,10), b=randomInt(0,a); return qSubtraction(a,b,'Tirar até 10'); }),
                 makeStage('Diferenças pequenas', 5, () => { const a=randomInt(3,10), b=randomInt(0,a-1); return qSubtraction(a,b,'Diferenças pequenas'); }),
                 makeStage('Quanto falta para chegar', 5, () => { const total=randomInt(4,10), diff=randomInt(1,total); return qUnknownSubtrahend(total, diff, 'Quanto falta para chegar'); }),
-                makeStage('Sem reserva até 20', 5, () => { let a,b; do { a=randomInt(1,20); b=randomInt(0,a); } while ((a % 10) < (b % 10)); return qSubtraction(a,b,'Sem reserva até 20'); }),
+                makeStage('Sem reserva até 20', 5, () => { const b=randomInt(1,9); const a=randomInt(b,19); if ((a % 10) < (b % 10)) return qSubtraction(a + (b % 10), b, 'Sem reserva até 20'); return qSubtraction(a,b,'Sem reserva até 20'); }),
                 makeStage('Descobrir o número inicial', 5, () => { const diff=randomInt(1,10), sub=randomInt(0,9); return qUnknownMinuend(diff, sub, 'Descobrir o número inicial'); }),
                 makeStage('Dezenas exatas', 5, () => { const a=randFrom([10,20,30,40,50]); const b=randFrom([0,10,20]); return qSubtraction(a, Math.min(a,b), 'Dezenas exatas'); }),
                 makeStage('Subtração em contexto simples', 5, () => { const a=randomInt(8,20), b=randomInt(1,Math.min(9,a)); return qSubtraction(a,b,'Subtração em contexto simples'); }),
@@ -14805,8 +15444,8 @@ function getOperationTrailStages(operation, level) {
                 makeStage('Domínio final', 5, () => { const pool=[() => { const a=randomInt(8,20), b=randomInt(0,a); return qSubtraction(a,b,'Domínio final'); }, () => { const total=randomInt(8,20), diff=randomInt(1,total); return qUnknownSubtrahend(total, diff, 'Domínio final'); }, () => { const diff=randomInt(1,12), sub=randomInt(0,9); return qUnknownMinuend(diff, sub, 'Domínio final'); }]; return randFrom(pool)(); })
             ],
             easy: [
-                makeStage('Subtração até 10 sem reserva', 10, () => { let a,b; do { a=randomInt(1,10); b=randomInt(0,a); } while ((a % 10) < (b % 10)); return qSubtraction(a,b,'Subtração até 10 sem reserva'); }),
-                makeStage('Subtração até 20 sem reserva', 10, () => { let a,b; do { a=randomInt(10,20); b=randomInt(0,a); } while ((a % 10) < (b % 10)); return qSubtraction(a,b,'Subtração até 20 sem reserva'); }),
+                makeStage('Subtração até 10 sem reserva', 10, () => { const a=randomInt(1,10), b=randomInt(0,a); return qSubtraction(a,b,'Subtração até 10 sem reserva'); }),
+                makeStage('Subtração até 20 sem reserva', 10, () => { const a=randomInt(10,20), b=randomInt(0,a); return qSubtraction(a,b,'Subtração até 20 sem reserva'); }),
                 makeStage('Dezenas exatas', 10, () => { const a=randFrom([20,30,40,50,60]), b=randFrom([10,20,30,40]); return qSubtraction(Math.max(a,b), Math.min(a,b), 'Dezenas exatas'); }),
                 makeStage('2 dígitos - 1 dígito sem reserva', 10, () => { const [a,b]=randSubtractionNoBorrow(20,89,1,9); return qSubtraction(a,b,'2 dígitos - 1 dígito sem reserva'); }),
                 makeStage('2 dígitos - 1 dígito com reserva', 10, () => { const [a,b]=randSubtractionWithBorrow(20,89,1,9); return qSubtraction(a,b,'2 dígitos - 1 dígito com reserva'); }),
@@ -14817,11 +15456,11 @@ function getOperationTrailStages(operation, level) {
                 makeStage('Domínio final do nível', 10, () => { const pool=[() => { const [a,b]=randSubtractionWithBorrow(20,99,1,49); return qSubtraction(a,b,'Domínio final do nível'); }, () => { const [a,b]=randSubtractionNoBorrow(20,99,1,49); return qSubtraction(a,b,'Domínio final do nível'); }]; return randFrom(pool)(); })
             ],
             medium: [
-                makeStage('Centenas sem reserva', 10, () => { const [a,b]=pickStructuredPair(() => [randomInt(200,799), randomInt(100,499)], (x,y) => x > y && hasNoBorrowAnywhere(x,y,3)); return qSubtraction(a,b,'Centenas sem reserva'); }),
-                makeStage('Centenas com reserva nas unidades', 10, () => { const [a,b]=pickStructuredPair(() => { const hundredsA=randFrom([200,300,400,500,600,700]); const hundredsB=randFrom([100,200,300,400,500]); const tensA=randFrom([20,30,40,50,60,70,80,90]); const tensB=randFrom([0,10,20,30,40,50,60,70,80]); const unitA=randomInt(0,8); const unitB=randomInt(unitA+1,9); return [hundredsA+tensA+unitA, Math.min(hundredsB+tensB+unitB, hundredsA+tensA+unitA-1)]; }, (x,y) => x > y && hasBorrowAtUnitsOnly(x,y,3)); return qSubtraction(a,b,'Centenas com reserva nas unidades'); }),
-                makeStage('Centenas com reserva nas dezenas', 10, () => { const [a,b]=pickStructuredPair(() => { const hundredsA=randFrom([300,400,500,600,700,800]); const hundredsB=randFrom([100,200,300,400,500,600]); const tensA=randFrom([0,10,20,30,40]); const tensB=randFrom([50,60,70,80,90]); const unitA=randomInt(0,9); const unitB=randomInt(0,unitA); return [hundredsA+tensA+unitA, Math.min(hundredsB+tensB+unitB, hundredsA+tensA+unitA-1)]; }, (x,y) => x > y && hasBorrowAtTensOnly(x,y,3)); return qSubtraction(a,b,'Centenas com reserva nas dezenas'); }),
+                makeStage('Centenas sem reserva', 10, () => { const [a,b]=randSubtractionNoBorrow(200,799,100,499); return qSubtraction(a,b,'Centenas sem reserva'); }),
+                makeStage('Centenas com reserva nas unidades', 10, () => { const a=randFrom([210,320,430,540,650])+randomInt(0,4); const b=randFrom([101,112,123,134,145])+randomInt(5,9); return qSubtraction(Math.max(a,b+20), b, 'Centenas com reserva nas unidades'); }),
+                makeStage('Centenas com reserva nas dezenas', 10, () => { const a=randFrom([340,450,560,670,780])+randomInt(0,4); const b=randFrom([120,230,240,350,360])+randomInt(0,4); return qSubtraction(Math.max(a,b+40), b, 'Centenas com reserva nas dezenas'); }),
                 makeStage('Reserva em mais de uma ordem', 10, () => { const a=randFrom([301,402,503,604,705,806]); const b=randFrom([178,189,297,398,409]); return qSubtraction(a,b,'Reserva em mais de uma ordem'); }),
-                makeStage('Descobrir o resultado faltante', 10, () => buildSubtractionMissingResultAuditQuestion('Descobrir o resultado faltante', gameState.currentLevel || 'medium')),
+                makeStage('Descobrir o resultado faltante', 10, () => { const minuend=randomInt(120,450), answer=randomInt(20,minuend-20); return qUnknownSubtrahend(minuend, answer, 'Descobrir o resultado faltante'); }),
                 makeStage('Descobrir o número que falta', 10, () => { const diff=randomInt(20,220), sub=randomInt(20,180); return qUnknownMinuend(diff, sub, 'Descobrir o número que falta'); }),
                 makeStage('Subtração por decomposição', 10, () => { const a=randomInt(220,699), b=randomInt(20,199); return qSubtraction(a,b,'Subtração por decomposição'); }),
                 makeStage('Situações-problema simples', 10, () => { const a=randomInt(150,600), b=randomInt(25,220); return qSubtraction(a,b,'Situações-problema simples'); }),
@@ -14830,7 +15469,7 @@ function getOperationTrailStages(operation, level) {
             ],
             advanced: [
                 makeStage('3 dígitos - 2 dígitos', 10, () => { const a=randomInt(250,999), b=randomInt(20,99); return qSubtraction(a,b,'3 dígitos - 2 dígitos'); }),
-                makeStage('3 dígitos - 3 dígitos com reserva', 10, () => { const [a,b]=pickStructuredPair(() => { const x=randomInt(350,999); return [x, randomInt(120, Math.min(799, x-1))]; }, (x,y) => x > y && !hasNoBorrowAnywhere(x,y,3)); return qSubtraction(a,b,'3 dígitos - 3 dígitos com reserva'); }),
+                makeStage('3 dígitos - 3 dígitos com reserva', 10, () => { const a=randomInt(350,999), b=randomInt(120,799); return qSubtraction(Math.max(a,b+10), b, '3 dígitos - 3 dígitos com reserva'); }),
                 makeStage('Reserva encadeada', 10, () => { const a=randFrom([401,502,603,704,805,906]); const b=randFrom([178,289,397,408,519]); return qSubtraction(a,b,'Reserva encadeada'); }),
                 makeStage('Diferença entre valores maiores', 10, () => { const a=randomInt(1000,4999), b=randomInt(120,2899); return qSubtraction(Math.max(a,b+100), b, 'Diferença entre valores maiores'); }),
                 makeStage('Minuendo desconhecido', 10, () => { const diff=randomInt(80,500), sub=randomInt(40,350); return qUnknownMinuend(diff, sub, 'Minuendo desconhecido'); }),
@@ -14873,16 +15512,16 @@ function getOperationTrailStages(operation, level) {
                 makeStage('Encontrar divisor simples', 10, () => { const divisor=randFrom([2,3,4,5,6,8,10]); const quotient=randomInt(2,15); return qDivisionFindDivisor(divisor*quotient, quotient, 'Encontrar divisor simples'); }),
                 makeStage('Encontrar dividendo simples', 10, () => { const divisor=randFrom([2,3,4,5,6,8,10]); const quotient=randomInt(2,15); return qDivisionFindDividend(divisor, quotient, 'Encontrar dividendo simples'); }),
                 makeStage('Leitura de divisão em contexto', 10, () => { const divisor=randFrom([3,4,5,6,7,8]); const quotient=randomInt(3,18); return qDivision(divisor*quotient, divisor, 'Leitura de divisão em contexto'); }),
-                makeStage('Comparar divisão exata e não exata', 10, () => buildDivisionExactVsNonExactCompareQuestion('Comparar divisão exata e não exata', gameState.currentLevel || 'medium')),
+                makeStage('Comparar divisão exata e não exata', 10, () => { const divisor=randFrom([3,4,5,6,7]); const quotient=randomInt(2,12); const add=randFrom([0,1,2]); return add === 0 ? qDivision(divisor*quotient, divisor, 'Comparar divisão exata e não exata') : qDivisionRemainder(divisor*quotient + add, divisor, 'Comparar divisão exata e não exata'); }),
                 makeStage('Introdução ao resto', 10, () => { const divisor=randFrom([3,4,5,6,7]); const quotient=randomInt(2,12); const rest=randomInt(1, divisor-1); return qDivisionRemainder(divisor*quotient + rest, divisor, 'Introdução ao resto'); }),
                 makeStage('Revisão mista do nível', 10, () => { const pool=[() => { const divisor=randFrom([3,4,5,6,7,8,9]); const quotient=randomInt(2,15); return qDivision(divisor*quotient, divisor, 'Revisão mista do nível'); }, () => { const divisor=randFrom([3,4,5,6,7]); const quotient=randomInt(2,12); const rest=randomInt(1, divisor-1); return qDivisionRemainder(divisor*quotient + rest, divisor, 'Revisão mista do nível'); }, () => { const divisor=randFrom([2,3,4,5,6,8,10]); const quotient=randomInt(2,15); return qDivisionFindDividend(divisor, quotient, 'Revisão mista do nível'); }]; return randFrom(pool)(); }),
                 makeStage('Domínio final do nível', 10, () => { const pool=[() => { const divisor=randFrom([3,4,5,6,7,8,9]); const quotient=randomInt(3,18); return qDivision(divisor*quotient, divisor, 'Domínio final do nível'); }, () => { const divisor=randFrom([3,4,5,6,7]); const quotient=randomInt(2,12); const rest=randomInt(1, divisor-1); return qDivisionRemainder(divisor*quotient + rest, divisor, 'Domínio final do nível'); }]; return randFrom(pool)(); })
             ],
             advanced: [
                 makeStage('Divisão com resto', 10, () => { const divisor=randFrom([4,5,6,7,8,9]); const quotient=randomInt(3,20); const rest=randomInt(1, divisor-1); return qDivisionRemainder(divisor*quotient + rest, divisor, 'Divisão com resto'); }),
-                makeStage('Interpretar o resto', 10, () => buildDivisionRemainderInterpretationAuditQuestion('Interpretar o resto', gameState.currentLevel || 'medium')),
-                makeStage('Escolher entre quociente e resto', 10, () => buildDivisionQuotientOrRemainderChoiceAuditQuestion('Escolher entre quociente e resto', gameState.currentLevel || 'medium')),
-                makeStage('Divisão em problema contextual', 10, () => buildDivisionContextAuditQuestion('Divisão em problema contextual', gameState.currentLevel || 'medium')),
+                makeStage('Interpretar o resto', 10, () => { const divisor=randFrom([3,4,5,6,7,8]); const quotient=randomInt(3,18); const rest=randomInt(1, divisor-1); return qDivisionRemainder(divisor*quotient + rest, divisor, 'Interpretar o resto'); }),
+                makeStage('Escolher entre quociente e resto', 10, () => { if (Math.random()<0.5) { const divisor=randFrom([4,5,6,7]); const quotient=randomInt(3,16); return qDivision(divisor*quotient, divisor, 'Escolher entre quociente e resto'); } const divisor=randFrom([4,5,6,7]); const quotient=randomInt(3,16); const rest=randomInt(1, divisor-1); return qDivisionRemainder(divisor*quotient + rest, divisor, 'Escolher entre quociente e resto'); }),
+                makeStage('Divisão em problema contextual', 10, () => { const divisor=randFrom([4,5,6,7,8,9]); const quotient=randomInt(4,20); return qDivision(divisor*quotient, divisor, 'Divisão em problema contextual'); }),
                 makeStage('Relação entre múltiplos e divisores', 10, () => { const divisor=randFrom([4,5,6,7,8,9,10]); const quotient=randomInt(4,20); return qDivision(divisor*quotient, divisor, 'Relação entre múltiplos e divisores'); }),
                 makeStage('Conferência pela multiplicação', 10, () => { const divisor=randFrom([4,5,6,7,8,9]); const quotient=randomInt(4,18); return qDivision(divisor*quotient, divisor, 'Conferência pela multiplicação'); }),
                 makeStage('Estimativa do quociente', 10, () => buildDivisionEstimateAuditQuestion('Estimativa do quociente')),
@@ -14921,20 +15560,20 @@ function getOperationTrailStages(operation, level) {
                 makeStage('Potências com base 3', 5, () => qPower(3, randFrom([2,3,4,5]), 'Potências com base 3')),
                 makeStage('Potências com base 4 e 5', 5, () => { const base=randFrom([4,5]); const exp=randFrom([2,3,4]); return qPower(base, exp, 'Potências com base 4 e 5'); }),
                 makeStage('Potência de 10', 5, () => qPower(10, randFrom([2,3,4]), 'Potência de 10')),
-                makeStage('Comparar valores de potências', 5, () => buildPowerCompareAuditQuestion('Comparar valores de potências', gameState.currentLevel || 'easy')),
+                makeStage('Comparar valores de potências', 5, () => { const base=randFrom([2,3,4,5]); const exp=randFrom([2,3,4]); return qPower(base, exp, 'Comparar valores de potências'); }),
                 makeStage('Encontrar resultado da potência', 5, () => { const base=randFrom([2,3,4,5,6]); const exp=randFrom([2,3,4]); return qPower(base, exp, 'Encontrar resultado da potência'); }),
                 makeStage('Reconhecer escrita expandida', 5, () => { const base=randFrom([2,3,4,5]); const exp=randFrom([2,3,4]); return qPowerExpanded(base, exp, 'Reconhecer escrita expandida'); }),
-                makeStage('Relacionar potência e padrão', 5, () => buildPowerPatternAuditQuestion('Relacionar potência e padrão', gameState.currentLevel || 'easy')),
+                makeStage('Relacionar potência e padrão', 5, () => { const base=randFrom([2,3,4,5]); const exp=randFrom([2,3,4]); return qPower(base, exp, 'Relacionar potência e padrão'); }),
                 makeStage('Revisão mista do nível', 5, () => { const base=randFrom([2,3,4,5,6,10]); const exp=randFrom([2,3,4]); return Math.random()<0.5 ? qPower(base, exp, 'Revisão mista do nível') : qPowerExpanded(Math.min(base,5), exp, 'Revisão mista do nível'); }),
                 makeStage('Domínio final do nível', 5, () => { const base=randFrom([2,3,4,5,6,10]); const exp=randFrom([2,3,4,5]); return qPower(base, exp, 'Domínio final do nível'); })
             ],
             advanced: [
                 makeStage('Expoente 0', 5, () => { const base=randFrom([2,3,4,5,6,7,8,9]); return qPower(base, 0, 'Expoente 0'); }),
                 makeStage('Expoente 1', 5, () => { const base=randFrom([2,3,4,5,6,7,8,9]); return qPower(base, 1, 'Expoente 1'); }),
-                makeStage('Comparação entre potências', 5, () => buildPowerCompareAuditQuestion('Comparação entre potências', gameState.currentLevel || 'advanced')),
+                makeStage('Comparação entre potências', 5, () => { const base=randFrom([2,3,4,5,6]); const exp=randFrom([2,3,4,5]); return qPower(base, exp, 'Comparação entre potências'); }),
                 makeStage('Potência em expressão curta', 5, () => { const base=randFrom([2,3,4,5,6]); const exp=randFrom([2,3,4]); return qPowerExpanded(base, exp, 'Potência em expressão curta'); }),
                 makeStage('Reconhecer erro comum', 5, () => { const base=randFrom([2,3,4,5,6]); const exp=randFrom([2,3,4]); return qPower(base, exp, 'Reconhecer erro comum'); }),
-                makeStage('Valor faltante em potência simples', 5, () => buildPowerMissingBaseAuditQuestion('Valor faltante em potência simples')),
+                makeStage('Valor faltante em potência simples', 5, () => { const base=randFrom([2,3,4,5,6]); const exp=randFrom([2,3,4]); return qPower(base, exp, 'Valor faltante em potência simples'); }),
                 makeStage('Aplicação em contexto', 5, () => { const base=randFrom([2,3,4,5,10]); const exp=randFrom([2,3,4]); return qPower(base, exp, 'Aplicação em contexto'); }),
                 makeStage('Consolidação conceitual', 5, () => { const base=randFrom([2,3,4,5,6,10]); const exp=randFrom([0,1,2,3,4]); return qPower(base, exp, 'Consolidação conceitual'); }),
                 makeStage('Revisão mista do nível', 5, () => { const base=randFrom([2,3,4,5,6,7,8,10]); const exp=randFrom([0,1,2,3,4,5]); return Math.random()<0.5 ? qPower(base, exp, 'Revisão mista do nível') : qPowerExpanded(Math.min(base,5), Math.max(2, exp || 2), 'Revisão mista do nível'); }),
@@ -15033,6 +15672,38 @@ function getOperationTrailMeta(operation, level, zeroBasedIndex = 0) {
     };
 }
 function initOperationTrailSession(operation, level) {
+    if (isChallengeMixOperation(operation)) {
+        const plan = buildLevelConsolidationPlan(operation, level);
+        const total = Math.max(1, Number(plan.length) || 6);
+        gameState.operationTrail = {
+            operation,
+            level,
+            key: getOperationTrailKey(operation, level),
+            startIndex: 0,
+            bankSize: total,
+            totalStages: total,
+            masteryMode: true,
+            currentStageIndex: 0,
+            currentStageAsked: 0,
+            currentStageCorrect: 0,
+            stageTarget: total,
+            targetAccuracy: Number(CHALLENGE_VALIDATION_CONFIG.minOverallAccuracy || 0.8),
+            reviewEvery: total + 1,
+            reviewAsked: 0,
+            lastQuestionWasReview: false,
+            currentStageLabel: getChallengeLeagueLabel(level),
+            supportMode: 'normal',
+            supportEscalations: 0,
+            supportHint: '',
+            supportLaneRemaining: 0,
+            supportLaneReason: '',
+            consolidationMode: true,
+            consolidation: { plan, index: 0, asked: 0, correct: 0, perStage: {}, perRole: {}, errorHistogram: {}, independentAsked: 0, independentCorrect: 0, assistedAsked: 0, assistedCorrect: 0 },
+            stageType: 'mixed-challenge'
+        };
+        gameState.totalQuestions = total;
+        return;
+    }
     const bankSize = getOperationTrailBankSize(operation, level);
     if (!bankSize) {
         gameState.operationTrail = { operation, level, key: getOperationTrailKey(operation, level), startIndex: 0, bankSize: 0, totalStages: 10, supportMode: 'normal', supportEscalations: 0, supportHint: '', supportLaneRemaining: 0, supportLaneReason: '', consolidationMode: false, consolidation: null, stageType: 'fluency' };
@@ -15098,6 +15769,61 @@ function generateQuestionFromOperationTrail(operation) {
     const trail = gameState.operationTrail;
     if (!trail || trail.operation !== operation || !trail.level) return null;
     if (trail.masteryMode) {
+        if (isChallengeMixOperation(operation) && trail.consolidationMode && trail.consolidation && Array.isArray(trail.consolidation.plan)) {
+            const cons = trail.consolidation;
+            const item = cons.plan[Math.max(0, Math.min(Number(cons.index) || 0, cons.plan.length - 1))];
+            if (!item) return null;
+            const mixedOperation = String(item.mixedOperation || 'addition').trim();
+            const mixedLevel = String(item.mixedLevel || getChallengeLeagueInternalLevel(trail.level)).trim();
+            const stages = getOperationTrailStages(mixedOperation, mixedLevel) || [];
+            if (!Array.isArray(stages) || !stages.length) return null;
+            const sourceStageIndex = Math.max(0, Math.min(Number(item.stageIndex) || 0, stages.length - 1));
+            const sourceStage = stages[sourceStageIndex] || stages[0];
+            const challengeRole = String(item.challengeRole || 'fluency').trim() || 'fluency';
+            const learningType = item.learningType || inferStageLearningType(mixedOperation, sourceStage.label || '');
+            let q = null;
+            if (challengeRole === 'transfer' && item.forceStrategy) {
+                q = buildStrategyQuestion(mixedOperation, sourceStage.label || '', mixedLevel);
+                if (!q && item.allowBridge) q = buildBridgeQuestion(mixedOperation, sourceStage.label || '');
+            }
+            if (!q) {
+                q = sourceStage.gen({ stageIndex: sourceStageIndex, stageSize: Math.max(1, Number(sourceStage.count) || 1), totalStages: stages.length, bankSize: cons.plan.length, absoluteIndex: Math.max(0, Number(cons.index) || 0) });
+            }
+            if (challengeRole !== 'transfer' && shouldInjectStrategyQuestion(mixedOperation, learningType, mixedLevel, false, true)) {
+                const strategyQ = buildStrategyQuestion(mixedOperation, sourceStage.label || q?.stageLabel || '', mixedLevel);
+                if (strategyQ) q = strategyQ;
+            } else if (challengeRole !== 'transfer' && shouldInjectBridgeQuestion(mixedOperation, learningType, false, true)) {
+                const bridgeQ = buildBridgeQuestion(mixedOperation, sourceStage.label || q?.stageLabel || '');
+                if (bridgeQ) q = bridgeQ;
+            }
+            if (q && typeof q === 'object') {
+                const fullStageLabel = `${formatOperationLabel(mixedOperation)} • ${sourceStage.label || item.mixedStageLabel || ''}`.trim();
+                q.isConsolidation = true;
+                q.consolidationStageIndex = Math.max(0, Number(item.seq) || 0);
+                q.consolidationStageLabel = fullStageLabel;
+                q.stageLabel = fullStageLabel;
+                q.stageIndex = Math.max(0, Number(item.seq) || 0);
+                q.stageSize = 1;
+                q.stageNumber = Math.max(1, Number(item.seq) || 0) + 1;
+                q.absoluteTrailIndex = Math.max(0, Number(cons.index) || 0);
+                q.bankSize = cons.plan.length;
+                q.isReview = false;
+                q.sourceStageIndex = Math.max(0, Number(item.seq) || 0);
+                q.sourceStageLabel = fullStageLabel;
+                q.masteryStageIndex = Math.max(0, Number(item.seq) || 0);
+                q.masteryStageLabel = fullStageLabel;
+                q.learningType = learningType;
+                q.learningTypeLabel = getLearningTypeLabel(learningType);
+                q.challengeRole = challengeRole;
+                q.challengeRoleLabel = formatChallengeRoleLabel(challengeRole);
+                q.challengePlanSeq = Math.max(0, Number(item.seq) || 0);
+                q.challengeLearningGoal = challengeRole === 'fluency' ? 'fluency' : 'comprehension';
+                q.challengeMixedOperation = mixedOperation;
+                q.challengeMixedLevel = mixedLevel;
+                q = auditQuestionBankByOperationAndLevel(q, { operation: mixedOperation, level: mixedLevel, stageLabel: sourceStage.label || item.mixedStageLabel || '' });
+            }
+            return q;
+        }
         const stages = getOperationTrailStages(operation, trail.level);
         if (!Array.isArray(stages) || !stages.length) return null;
         if (trail.consolidationMode && trail.consolidation && Array.isArray(trail.consolidation.plan)) {
@@ -15726,7 +16452,7 @@ function describeLevelUnlockQuestionCounter(meta) {
     if (!meta) return '';
     const totalTxt = `Faltam ${meta.remainingTotal} quest${meta.remainingTotal === 1 ? 'ão' : 'ões'} para liberar o próximo nível.`;
     if (meta.consolidationMode) {
-        return `${totalTxt} Agora você está na consolidação: faltam ${meta.remainingConsolidation} questão${meta.remainingConsolidation === 1 ? '' : 'ões'} e precisa manter ${meta.requiredAccuracyPct}% de aproveitamento.`;
+        return `${totalTxt} Agora você está no Modo Desafio: faltam ${meta.remainingConsolidation} questão${meta.remainingConsolidation === 1 ? '' : 'ões'} e o sistema vai validar compreensão real, não só pontuação.`;
     }
     return `${totalTxt} Nesta etapa, faltam ${meta.remainingCurrentStage} questão${meta.remainingCurrentStage === 1 ? '' : 'ões'} e o mínimo é ${meta.stageRequiredCorrect}/${meta.currentStageTarget} acertos (${meta.requiredAccuracyPct}%).`;
 }
@@ -16058,12 +16784,14 @@ function generateQuestion(operation) {
  * @param {string} level - O nível selecionado ('easy', 'medium', 'advanced').
  */
 function startGame(operation, level, options = {}) {
+    options = options && typeof options === 'object' ? options : {};
     clearQuestionBankAuditTrail();
     if (!operation || !level) {
         showFeedbackMessage("Erro: Operação ou Nível não selecionados!", 'error');
         exibirTela('home-screen');
         return;
     }
+    if (isChallengeMixOperation(operation)) options.skipDiagnostic = true;
     if (!options.skipDiagnostic && shouldRunInitialDiagnostic(operation, level, !!options.forceDiagnostic)) {
         startDiagnosticSession(operation, level, { force: !!options.forceDiagnostic, originalRapidMode: !!gameState.isRapidMode });
         return;
@@ -16099,7 +16827,9 @@ function startGame(operation, level, options = {}) {
     
     // Quantidade de questões (Modo Rápido) por operação
     if (gameState.isRapidMode) {
-        if (operation === 'addition' || operation === 'subtraction' || operation === 'division') {
+        if (isChallengeMixOperation(operation)) {
+            gameState.totalQuestions = Math.max(1, Number(gameState.operationTrail?.consolidation?.plan?.length) || 6);
+        } else if (operation === 'addition' || operation === 'subtraction' || operation === 'division') {
             gameState.totalQuestions = 100;
         } else if (operation === 'potenciacao' || operation === 'radiciacao') {
             gameState.totalQuestions = 30;
@@ -16111,7 +16841,9 @@ function startGame(operation, level, options = {}) {
         gameState.totalQuestions = Infinity;
     }
     // --- Configuração especial: Tabuada da Multiplicação (por níveis) ---
-if (operation === 'multiplication' && isMultiplicationApprenticeLevel(level)) {
+if (isChallengeMixOperation(operation)) {
+    initOperationTrailSession(operation, level);
+} else if (operation === 'multiplication' && isMultiplicationApprenticeLevel(level)) {
     gameState.multiplication.mode = 'trail';
     gameState.multiplication.pendingLevel = level;
     initOperationTrailSession(operation, level);
@@ -16153,6 +16885,9 @@ if (operation === 'multiplication' && isMultiplicationApprenticeLevel(level)) {
 } else {
     initOperationTrailSession(operation, level);
 }
+    if (options.forceChallenge && gameState.operationTrail && gameState.operationTrail.masteryMode) {
+        activateChallengeModeForTrail(gameState.operationTrail, { silent: false });
+    }
     // 2. Configura o tempo máximo baseado no nível e acessibilidade
     let baseTime;
     switch (level) {
@@ -16606,34 +17341,6 @@ function buildQuestionStrategicHintText(q) {
 function buildQuestionCommonErrors(q) {
     const ctx = getQuestionPedagogicalContext(q);
     const op = String(ctx.op || q?.operacao || gameState.currentOperation || '');
-    if (op === 'subtraction' && ctx.stage.includes('resultado faltante')) return [
-        { label: 'Esconder o número errado', cause: 'A pergunta pede o resultado da subtração, mas o aluno tenta achar um termo escondido.', recovery: 'Leia o enunciado e confirme se falta descobrir o resultado final da conta.' },
-        { label: 'Trocar subtração por adição', cause: 'Os números do enunciado são somados automaticamente.', recovery: 'Primeiro identifique o todo e a parte retirada; depois calcule o que sobra.' }
-    ];
-    if (op === 'division' && ctx.stage.includes('interpretar o resto')) return [
-        { label: 'Responder com o quociente', cause: 'O aluno encontra os grupos completos, mas não observa o que sobra.', recovery: 'Depois de montar os grupos completos, veja quantos itens restam fora deles.' },
-        { label: 'Ignorar a sobra', cause: 'A leitura para quando os grupos completos acabam.', recovery: 'Pergunte explicitamente: sobrou alguma coisa sem formar outro grupo?' }
-    ];
-    if (op === 'division' && ctx.stage.includes('escolher entre quociente e resto')) return [
-        { label: 'Dar a sobra quando a pergunta quer grupos', cause: 'Quociente e resto não foram separados mentalmente.', recovery: 'Decida se a pergunta pede quantos grupos cabem ou quantos itens sobram.' },
-        { label: 'Dar grupos quando a pergunta quer sobra', cause: 'A leitura para na primeira resposta que aparece.', recovery: 'Volte ao final da pergunta e destaque a palavra que mostra o que deve ser respondido.' }
-    ];
-    if (op === 'division' && ctx.stage.includes('comparar divisão exata e não exata')) return [
-        { label: 'Marcar a divisão maior como exata', cause: 'O aluno usa o tamanho dos números, não a ausência de sobra.', recovery: 'Teste se sobra alguma coisa depois de montar os grupos completos.' },
-        { label: 'Confundir exata com quociente inteiro pequeno', cause: 'A ideia de exatidão não está ligada ao resto zero.', recovery: 'Divisão exata é a que termina sem sobra.' }
-    ];
-    if (op === 'potenciacao' && (ctx.stage.includes('comparar valores de potências') || ctx.stage.includes('comparação entre potências'))) return [
-        { label: 'Comparar só base ou só expoente', cause: 'A potência é julgada pela aparência, sem calcular os valores.', recovery: 'Descubra o valor de cada potência antes de comparar.' },
-        { label: 'Tratar potência como multiplicação simples', cause: 'Base e expoente são lidos como dois fatores comuns.', recovery: 'Reescreva cada potência como multiplicação repetida.' }
-    ];
-    if (op === 'potenciacao' && ctx.stage.includes('relacionar potência e padrão')) return [
-        { label: 'Quebrar o padrão da sequência', cause: 'O aluno não percebe que a base continua e o expoente aumenta de 1 em 1.', recovery: 'Observe o que muda e o que se repete em cada termo da sequência.' },
-        { label: 'Avançar uma etapa errada', cause: 'O próximo termo é estimado sem relacionar com a potência anterior.', recovery: 'Use o termo anterior como apoio e multiplique pela base mais uma vez.' }
-    ];
-    if (op === 'multiplication' && ctx.stage.includes('padrões das tabuadas 2 e 5')) return [
-        { label: 'Contar de um em um', cause: 'O padrão da tabuada não foi percebido.', recovery: 'Leia a sequência em saltos de 2 ou de 5 antes de responder.' },
-        { label: 'Misturar tabuada do 2 com a do 5', cause: 'As regularidades finais dos resultados não foram observadas.', recovery: 'Na tabuada do 5, observe finais 0 ou 5; na do 2, observe números pares.' }
-    ];
     if (ctx.bridge === 'addition-subtraction') return [
         { label: 'Somar em vez de descobrir a parte que falta', cause: 'A soma-pista é lida como conta final.', recovery: 'Volte ao todo e retire a parte conhecida.' },
         { label: 'Escolher a parte conhecida como resposta', cause: 'O aluno identifica o dado, mas não a pergunta.', recovery: 'Releia qual parte está faltando.' }
@@ -16679,42 +17386,28 @@ function buildQuestionCommonErrorsHtml(q) {
 }
 function buildQuestionGradualExplanationHtml(q) {
     const flow = getAdaptiveLearningFlowMeta(q);
-    const contract = q?.learningContract || buildQuestionLearningContract(q || {});
-    const reasoningPrompt = contract.reasoningRequired ? ` Pergunta de raciocínio: ${buildQuestionKeyword(q).replace(/^Palavra-chave:\s*/i, '')}.` : '';
     const level1 = buildFacilitatedQuestionText(q);
-    const level2 = `${getPriority3StrategyText(q)}${flow.tier >= 2 ? ' • Use esta camada quando a leitura simples não bastar.' : ''}`;
-    const level3 = `${getPriority3AlternativePathText(q) || buildQuestionStrategicHintText(q)}${flow.tier >= 3 ? ' • Esta é a rota aprofundada, com raciocínio e conferência.' : ''}${reasoningPrompt}`;
-    return `<div class="activity-step-grid"><div class="activity-step-card"><strong>Nível 1 — Simples e direto</strong><span>${escapeHtml(level1)}</span></div><div class="activity-step-card"><strong>Nível 2 — Detalhado</strong><span>${escapeHtml(level2)}</span></div><div class="activity-step-card"><strong>Nível 3 — Aprofundado com raciocínio</strong><span>${escapeHtml(level3)}</span></div></div><div class="ils-visual-sub">Camada sugerida agora: ${escapeHtml(flow.tierLabel)}.${contract.reasoningRequired ? ' Nesta questão, acertar exige explicar mentalmente a ideia antes de confirmar.' : ''}</div>`;
+    const level2 = `${getPriority3StrategyText(q)}${flow.tier >= 2 ? ' • Use esta camada se a dica inicial não bastar.' : ''}`;
+    const level3 = `${getPriority3AlternativePathText(q) || buildQuestionStrategicHintText(q)}${flow.tier >= 3 ? ' • Esta é a rota mais completa para reorganizar o raciocínio.' : ''}`;
+    return `<div class="activity-step-grid"><div class="activity-step-card"><strong>Nível 1 — Entender</strong><span>${escapeHtml(level1)}</span></div><div class="activity-step-card"><strong>Nível 2 — Resolver</strong><span>${escapeHtml(level2)}</span></div><div class="activity-step-card"><strong>Nível 3 — Conferir</strong><span>${escapeHtml(level3)}</span></div></div><div class="ils-visual-sub">Camada sugerida agora: ${escapeHtml(flow.tierLabel)}.</div>`;
 }
 function buildQuestionTutorFlowHtml(q) {
     const ctx = getQuestionPedagogicalContext(q);
     const flow = getAdaptiveLearningFlowMeta(q);
-    const stageInsight = getCurrentQuestionStageDiagnostic(q);
-    const contract = q?.learningContract || buildQuestionLearningContract(q || {});
-    const challenge = String(stageInsight?.focus?.checkpoint || stageInsight?.focus?.studentMove || getPriority3AlternativePathText(q) || '').trim();
     const steps = [
-        `1. Antes de responder, nomeie a tarefa: ${buildQuestionKeyword(q).replace(/^Palavra-chave:\s*/i, '')}.`,
-        `2. Se errar uma vez: siga a rota do tipo de erro esperado (${flow.errorType.toLowerCase()}) — ${flow.tutorRoute}`,
-        `3. Se errar de novo: abra a explicação guiada e resolva por etapas.`,
-        `4. Se acertar: confira a estratégia usada e tente o desafio extra da mesma ideia.`,
-        `5. Estratégia-base desta questão: ${getPriority3StrategyText(q)}`
+        `1. Nomeie a tarefa: ${buildQuestionKeyword(q).replace(/^Palavra-chave:\s*/i, '')}.`,
+        `2. Escolha a estratégia: ${getPriority3StrategyText(q)}`,
+        `3. Fluxo de ajuda: primeiro dica leve, depois explicação guiada e, se necessário, resolução comentada.`
     ];
-    if (contract.reasoningRequired) {
-        steps.splice(1, 0, `2. Antes de confirmar, responda mentalmente: ${buildQuestionKeyword(q).replace(/^Palavra-chave:\s*/i, '')}.`);
-        steps[2] = `3. Se errar uma vez: siga a rota do tipo de erro esperado (${flow.errorType.toLowerCase()}) — ${flow.tutorRoute}`;
-        steps[3] = `4. Se errar de novo: abra a explicação guiada e resolva por etapas.`;
-        steps[4] = `5. Se acertar: confira a estratégia usada e tente o desafio extra da mesma ideia.`;
-        steps[5] = `6. Estratégia-base desta questão: ${getPriority3StrategyText(q)}`;
-    }
+    const stageInsight = getCurrentQuestionStageDiagnostic(q);
     if (stageInsight?.domain?.stateLabel) {
         steps.push(`${steps.length + 1}. Estado desta habilidade: ${stageInsight.domain.stateLabel}. ${stageInsight.domain.studentSignal}`);
     }
     if (stageInsight && stageInsight.count >= 2 && stageInsight.focus && String(stageInsight.label || '').trim()) {
-        steps.push(`${steps.length + 1}. Erro mais provável nesta etapa: ${stageInsight.label}. ${stageInsight.focus.studentMove}`);
+        steps.push(`${steps.length + 1}. Atenção ao erro que mais se repete aqui: ${stageInsight.label}. ${stageInsight.focus.studentMove}`);
     }
     if (ctx.isEstimation) steps.push(`${steps.length + 1}. Elimine alternativas muito pequenas ou muito grandes antes do cálculo detalhado.`);
     if (ctx.isRemainder) steps.push(`${steps.length + 1}. Separe quociente e resto: grupos completos não são o mesmo que sobra.`);
-    if (challenge) steps.push(`${steps.length + 1}. Desafio extra sugerido após o acerto: ${challenge}`);
     steps.push(`${steps.length + 1}. Camada recomendada neste momento: ${flow.tierLabel}.`);
     return `<ol class="activity-flow-list">${steps.map((step) => `<li>${escapeHtml(step)}</li>`).join('')}</ol>`;
 }
@@ -16722,11 +17415,9 @@ function buildQuestionAccessibilityNote(q) {
     const flow = getAdaptiveLearningFlowMeta(q);
     const domain = q?.skillDomain || getCurrentQuestionStageDiagnostic(q)?.domain || null;
     const supports = [
-        'Leitura simplificada da pergunta',
-        'Instrução passo a passo',
-        'Apoio visual descrito em texto',
-        'Resposta alternativa por digitação',
-        'Linguagem inclusiva e foco no que a questão pede'
+        'Leitura facilitada em texto simples',
+        'Pista visual para representar a operação',
+        'Resposta alternativa por digitação'
     ];
     if (flow.tier >= 2) supports.push('Explicação guiada recomendada para esta tentativa');
     if (flow.tier >= 3) supports.push('Passo a passo completo disponível nesta questão');
@@ -16734,15 +17425,12 @@ function buildQuestionAccessibilityNote(q) {
     if (gameState.isVoiceReadActive) supports.push('Leitura em voz ativada nesta sessão');
     else supports.push('Você pode ativar a leitura em voz no botão de acessibilidade');
     if (gameState.isExtraTime) supports.push('Tempo estendido ativado');
-    const contract = q?.learningContract || buildQuestionLearningContract(q || {});
-    if (contract.reasoningRequired) supports.push('Pergunta-chave curta para apoiar compreensão antes da resposta');
     return `Apoios disponíveis: ${supports.join(' • ')}.`;
 }
 function buildQuestionLearningMission(q) {
     const stage = getPriority3StageLabel(q) || 'Etapa atual';
     const opLabel = formatOperationLabel(getQuestionSemanticOperation(q) || q?.operacao || gameState.currentOperation || '');
-    const contract = q?.learningContract || buildQuestionLearningContract(q || {});
-    return `Missão pedagógica: entender ${opLabel.toLowerCase()} em “${stage}” sem depender só de tentativa e erro${contract.reasoningRequired ? ', explicando mentalmente a ideia central' : ''}.`;
+    return `Missão pedagógica: entender ${opLabel.toLowerCase()} em “${stage}” sem depender só de tentativa e erro.`;
 }
 
 function buildAuditStepCards(...items) {
@@ -16955,79 +17643,6 @@ function auditQuestionSupportQuality(q) {
     if (ctx.op === 'multiplication' && ctx.isEqualGroups && !/(grupo|repete|multiplica)/i.test(bundle)) issues.push('support-misses-groups-language');
     return { keyword, reading, visualHtml, hint, issues };
 }
-function getPlaceDigits(n) {
-    const safe = Math.max(0, Math.round(Number(n) || 0));
-    return {
-        units: safe % 10,
-        tens: Math.floor(safe / 10) % 10,
-        hundreds: Math.floor(safe / 100) % 10,
-        thousands: Math.floor(safe / 1000) % 10
-    };
-}
-function evaluateQuestionMathAndLearningContracts(question) {
-    try {
-        if (!question || typeof question !== 'object') return { ok: true, issues: [] };
-        let q = question;
-        const op = String(q.operacao || q.semanticOperation || '').trim();
-        const stageLabel = normalizeSkillStageLabel(q.masteryStageLabel || q.stageLabel || '').toLowerCase();
-        const variant = String(q.auditStageVariant || '').trim().toLowerCase();
-        const text = String(q.question || '').toLowerCase();
-        const n1 = Number(q.num1);
-        const n2 = Number(q.num2);
-        const issues = [];
-        const d1 = getPlaceDigits(n1);
-        const d2 = getPlaceDigits(n2);
-        const hasCarryUnits = Number.isFinite(n1) && Number.isFinite(n2) ? (d1.units + d2.units >= 10) : false;
-        const hasCarryTens = Number.isFinite(n1) && Number.isFinite(n2) ? (d1.tens + d2.tens >= 10) : false;
-        const hasCarryHundreds = Number.isFinite(n1) && Number.isFinite(n2) ? (d1.hundreds + d2.hundreds >= 10) : false;
-        const hasBorrowUnits = Number.isFinite(n1) && Number.isFinite(n2) ? (d1.units < d2.units) : false;
-        const hasBorrowTens = Number.isFinite(n1) && Number.isFinite(n2) ? (d1.tens < d2.tens) : false;
-        const hasBorrowHundreds = Number.isFinite(n1) && Number.isFinite(n2) ? (d1.hundreds < d2.hundreds) : false;
-        if (op === 'addition') {
-            if (stageLabel.includes('sem reagrupamento') && (hasCarryUnits || hasCarryTens || hasCarryHundreds)) issues.push('carry-unexpected');
-            if (stageLabel.includes('reagrupamento nas dezenas') && (!hasCarryTens || hasCarryUnits)) issues.push('carry-tens-required');
-            if (stageLabel.includes('reagrupamento nas unidades') && !hasCarryUnits) issues.push('carry-units-required');
-        }
-        if (op === 'subtraction') {
-            if (stageLabel.includes('sem reserva') && (hasBorrowUnits || hasBorrowTens || hasBorrowHundreds)) issues.push('borrow-unexpected');
-            if (stageLabel.includes('reserva nas dezenas') && (!hasBorrowTens || hasBorrowUnits)) issues.push('borrow-tens-required');
-            if (stageLabel.includes('reserva nas unidades') && !hasBorrowUnits) issues.push('borrow-units-required');
-            if (stageLabel.includes('com reserva') && !(hasBorrowUnits || hasBorrowTens || hasBorrowHundreds)) issues.push('borrow-required');
-        }
-        if (variant === 'division-remainder-interpretation' && !/sobra|sobram|resto/.test(text)) issues.push('remainder-reading-missing');
-        if (variant === 'division-choice-remainder' && !/sobram|sobra|resto/.test(text)) issues.push('choice-remainder-reading-missing');
-        if (variant === 'division-choice-quotient' && !/grupos completos|caixas completas|quantas caixas completas|quantos grupos/.test(text)) issues.push('choice-quotient-reading-missing');
-        if (variant === 'division-exact-vs-nonexact' && !/qual divis[aã]o [ée] exata/.test(text)) issues.push('exact-compare-missing');
-        if (variant === 'power-compare' && !/compare/.test(text)) issues.push('power-compare-missing');
-        if (variant === 'power-pattern' && !/sequ[êe]ncia|pr[óo]ximo valor/.test(text)) issues.push('power-pattern-missing');
-        if (variant === 'multiplication-pattern' && !/sequ[êe]ncia|qual n[úu]mero falta/.test(text)) issues.push('multiplication-pattern-missing');
-        return { ok: issues.length === 0, issues };
-    } catch (_) {
-        return { ok: true, issues: [] };
-    }
-}
-function enforceQuestionContracts(question, ctx = {}) {
-    try {
-        if (!question || typeof question !== 'object') return { question, issues: [], rebuilt: false };
-        const operation = String(ctx.operation || getQuestionSemanticOperation(question) || question.operacao || '');
-        const level = String(ctx.level || gameState.currentLevel || '');
-        const stageLabel = String(ctx.stageLabel || question.masteryStageLabel || question.stageLabel || '');
-        let current = question;
-        let audit = evaluateQuestionMathAndLearningContracts(current);
-        if (audit.ok) return { question: current, issues: [], rebuilt: false };
-        const rebuilt = auditQuestionBankByOperationAndLevel(current, { operation, level, stageLabel });
-        if (rebuilt && typeof rebuilt === 'object') {
-            rebuilt.learningContract = buildQuestionLearningContract(rebuilt);
-            const rebuiltAudit = evaluateQuestionMathAndLearningContracts(rebuilt);
-            if (rebuiltAudit.ok) return { question: rebuilt, issues: audit.issues, rebuilt: true };
-            return { question: rebuilt, issues: rebuiltAudit.issues, rebuilt: true };
-        }
-        return { question: current, issues: audit.issues, rebuilt: false };
-    } catch (_) {
-        return { question, issues: [], rebuilt: false };
-    }
-}
-
 function auditAndFixQuestionBeforeDisplay(question, ctx = {}) {
     try {
         if (!question || typeof question !== 'object') return question;
@@ -17052,17 +17667,6 @@ function auditAndFixQuestionBeforeDisplay(question, ctx = {}) {
             issues.push(`unparsed:${expected.reason}`);
         }
         const safeOp = String(q.operacao || q.semanticOperation || q.operationMetadata || gameState.currentOperation || '');
-        const contractAudit = enforceQuestionContracts(q, {
-            operation: safeOp,
-            level: String(ctx.level || gameState.currentLevel || ''),
-            stageLabel: String(q.masteryStageLabel || q.stageLabel || '')
-        });
-        if (contractAudit.rebuilt && contractAudit.question) {
-            q = contractAudit.question;
-            fixes.push(`contract-rebuilt:${contractAudit.issues.join('|')}`);
-        } else if (contractAudit.issues.length) {
-            issues.push(`contract:${contractAudit.issues.join('|')}`);
-        }
         if (!Array.isArray(q.options) || new Set(q.options.map((v) => String(v))).size < 4 || !q.options.some((v) => Number(v) === Number(q.answer))) {
             q.options = buildQuestionOptions(safeOp, Number(q.answer), {
                 num1: q.num1,
@@ -17498,6 +18102,7 @@ function recordOperationTrailQuestionResolution(question, wasCorrectFinal) {
         ? String(question.consolidationStageLabel || question.stageLabel || '')
         : String(question.isReview ? (question.sourceStageLabel || question.stageLabel || '') : (question.masteryStageLabel || question.stageLabel || ''));
     const learningType = question.learningType || inferStageLearningType(trail.operation, resolvedStageLabel);
+    const supportMode = normalizeAdaptiveSupportMode(question?.supportMode || trail.supportMode || 'normal');
     const lastErrorMeta = (!wasCorrectFinal && gameState.__lastErrorMeta && typeof gameState.__lastErrorMeta === 'object') ? gameState.__lastErrorMeta : null;
     updateOperationSkillReviewRecord(trail.operation, trail.level, resolvedStageIndex, resolvedStageLabel, learningType, !!wasCorrectFinal, {
         isBridgeQuestion: !!question.isBridgeQuestion,
@@ -17505,20 +18110,23 @@ function recordOperationTrailQuestionResolution(question, wasCorrectFinal) {
         errorDimension: lastErrorMeta?.errorDimension || '',
         selectedDistractorCode: lastErrorMeta?.selectedDistractorCode || '',
         selectedDistractorLabel: lastErrorMeta?.selectedDistractorLabel || '',
-        supportMode: trail.supportMode || 'normal',
-        wasAssisted: !!(trail.supportMode && trail.supportMode !== 'normal'),
+        supportMode,
+        wasAssisted: supportMode !== 'normal',
         usedAlternativeResponse: !!question.usedAlternativeResponse,
         sessionKey: String(gameState.sessionKey || '')
     });
     gameState.__lastErrorMeta = null;
     if (trail.consolidationMode && question.isConsolidation) {
         if (!trail.consolidation || typeof trail.consolidation !== 'object') {
-            trail.consolidation = { plan: [], index: 0, asked: 0, correct: 0, perStage: {} };
+            trail.consolidation = { plan: [], index: 0, asked: 0, correct: 0, perStage: {}, perRole: {}, errorHistogram: {}, independentAsked: 0, independentCorrect: 0, assistedAsked: 0, assistedCorrect: 0 };
         }
         const cons = trail.consolidation;
+        const challengeRole = String(question.challengeRole || inferChallengeValidationRole(trail.operation, resolvedStageLabel, learningType) || 'fluency').trim() || 'fluency';
         cons.asked = Math.max(0, Number(cons.asked) || 0) + 1;
         if (wasCorrectFinal) cons.correct = Math.max(0, Number(cons.correct) || 0) + 1;
         if (!cons.perStage || typeof cons.perStage !== 'object') cons.perStage = {};
+        if (!cons.perRole || typeof cons.perRole !== 'object') cons.perRole = {};
+        if (!cons.errorHistogram || typeof cons.errorHistogram !== 'object') cons.errorHistogram = {};
         const stageKey = String(resolvedStageIndex);
         const prev = cons.perStage[stageKey] || { asked: 0, correct: 0, label: resolvedStageLabel, learningType };
         cons.perStage[stageKey] = {
@@ -17527,6 +18135,21 @@ function recordOperationTrailQuestionResolution(question, wasCorrectFinal) {
             label: resolvedStageLabel,
             learningType
         };
+        const prevRole = cons.perRole[challengeRole] || { asked: 0, correct: 0, label: formatChallengeRoleLabel(challengeRole) };
+        cons.perRole[challengeRole] = {
+            asked: Math.max(0, Number(prevRole.asked) || 0) + 1,
+            correct: Math.max(0, Number(prevRole.correct) || 0) + (wasCorrectFinal ? 1 : 0),
+            label: formatChallengeRoleLabel(challengeRole)
+        };
+        if (supportMode === 'normal') {
+            cons.independentAsked = Math.max(0, Number(cons.independentAsked) || 0) + 1;
+            if (wasCorrectFinal) cons.independentCorrect = Math.max(0, Number(cons.independentCorrect) || 0) + 1;
+        } else {
+            cons.assistedAsked = Math.max(0, Number(cons.assistedAsked) || 0) + 1;
+            if (wasCorrectFinal) cons.assistedCorrect = Math.max(0, Number(cons.assistedCorrect) || 0) + 1;
+        }
+        const errorKey = String(lastErrorMeta?.selectedDistractorCode || lastErrorMeta?.typicalError || '').trim();
+        if (!wasCorrectFinal && errorKey) cons.errorHistogram[errorKey] = Math.max(0, Number(cons.errorHistogram[errorKey]) || 0) + 1;
         cons.index = Math.max(0, Number(cons.index) || 0) + 1;
         trail.lastQuestionWasReview = false;
         return;
@@ -17629,14 +18252,6 @@ function handleAnswer(selectedAnswer, selectedButton) {
         }
         gameState.score += scoreGain;
         atualizarXP(xpGain);
-        try {
-            const contract = q?.learningContract || buildQuestionLearningContract(q || {});
-            const deservesComprehensionBonus = !!contract.reasoningRequired && String(contract.learningType || '').toLowerCase() === 'comprehension' && gameState.attemptsThisQuestion === 0 && !gameState.isRapidMode && normalizeAdaptiveSupportMode(q?.supportMode || gameState.operationTrail?.supportMode || 'normal') === 'normal';
-            if (deservesComprehensionBonus) {
-                grantPetBonusXP(4);
-                try { PET_LEVEL1_UI.showToast('🧠 Bônus de compreensão +4 XP', { type: 'success', timeout: 2200 }); } catch (_) {}
-            }
-        } catch (_) {}
         try {
             if (!gameState.__combo3Rewarded && Number(gameState.__sessionCorrectStreak || 0) >= 3) {
                 gameState.__combo3Rewarded = true;
@@ -17807,6 +18422,15 @@ function endGame() {
                     const totalCons = Math.max(0, Number(consRes?.total) || 0);
                     const hitCons = Math.max(0, Number(consRes?.correct) || 0);
                     const accCons = Math.round(Number(consRes?.accuracy || 0) * 100);
+                    const challengeSig = `${gameState.currentOperation}|${gameState.currentLevel}|${totalCons}|${hitCons}|${accCons}|${consRes?.passed ? 1 : 0}`;
+                    let leagueOutcome = gameState.__challengeLeagueOutcome && gameState.__challengeLeagueOutcomeSig === challengeSig
+                        ? gameState.__challengeLeagueOutcome
+                        : null;
+                    if (!leagueOutcome) {
+                        leagueOutcome = recordChallengeLeagueOutcome(gameState.currentOperation, gameState.currentLevel, consRes);
+                        gameState.__challengeLeagueOutcome = leagueOutcome;
+                        gameState.__challengeLeagueOutcomeSig = challengeSig;
+                    }
                     trail.lastStageResult = {
                         consolidation: true,
                         passed: !!consRes?.passed,
@@ -17815,15 +18439,18 @@ function endGame() {
                         accuracy: accCons,
                         weakStageIndex: consRes?.weakStageIndex ?? null,
                         weakStageLabel: consRes?.weakStageLabel || '',
-                        weakLearningType: consRes?.weakLearningType || ''
+                        weakLearningType: consRes?.weakLearningType || '',
+                        challengeLeague: leagueOutcome || null
                     };
+                    const leaguePrefix = leagueOutcome?.playedLeagueLabel ? `${leagueOutcome.playedLeagueLabel}: ` : '';
+                    const leagueStatus = leagueOutcome ? ` ${leagueOutcome.medal ? `Medalha: ${leagueOutcome.medalIcon} ${leagueOutcome.medalLabel}. ` : ''}${getChallengeLeagueStatusText(leagueOutcome)}` : '';
                     if (consRes?.passed) {
-                        sugg.textContent = `Prova de consolidação concluída com ${hitCons}/${totalCons} (${accCons}%). O nível foi validado com mistura real de fluência e compreensão.`;
+                        sugg.textContent = `Modo Desafio — ${leaguePrefix}${hitCons}/${totalCons} (${accCons}%). Compreensão real validada em fluência, estrutura, aplicação e transferência.${leagueStatus}`;
                     } else if (Number.isInteger(consRes?.weakStageIndex)) {
                         const weakType = getLearningTypeLabel(consRes?.weakLearningType || 'fluency').toLowerCase();
-                        sugg.textContent = `Prova de consolidação: ${hitCons}/${totalCons} (${accCons}%). Antes de considerar o nível consolidado, volte para a Etapa ${Number(consRes.weakStageIndex) + 1}: ${consRes.weakStageLabel}. Essa habilidade de ${weakType} ainda precisa de reforço.`;
+                        sugg.textContent = `Modo Desafio — ${leaguePrefix}${hitCons}/${totalCons} (${accCons}%). Antes de avançar, volte para a Etapa ${Number(consRes.weakStageIndex) + 1}: ${consRes.weakStageLabel}. ${consRes?.failedReason || `Essa habilidade de ${weakType} ainda precisa de reforço.`}${leagueStatus}`;
                     } else {
-                        sugg.textContent = `Prova de consolidação: ${hitCons}/${totalCons} (${accCons}%). Refaça a consolidação para validar o nível com mistura de habilidades.`;
+                        sugg.textContent = `Modo Desafio — ${leaguePrefix}${hitCons}/${totalCons} (${accCons}%). ${consRes?.failedReason || 'Refaça o desafio para validar o nível com compreensão real.'}${leagueStatus}`;
                     }
                 } else {
                     const asked = Math.max(0, Number(trail.currentStageAsked) || 0);
@@ -17846,7 +18473,7 @@ function endGame() {
                         ? `Regra para avançar: ${reqMeta.requiredCorrect}/${reqMeta.targetQuestions} acertos (${reqMeta.targetAccuracyPct}%).`
                         : `Regra para avançar: ${need}% de domínio.`;
                     if (passed && currentStage >= Math.max(0, Number(trail.totalStages || 1) - 1)) {
-                        sugg.textContent = `Etapa ${currentStage + 1}/${trail.totalStages} — ${stageName}. Aproveitamento ${correct}/${asked} (${Math.round(acc * 100)}%). ${ruleText} A etapa final foi dominada e a prova de consolidação foi liberada nesta sessão.`;
+                        sugg.textContent = `Etapa ${currentStage + 1}/${trail.totalStages} — ${stageName}. Aproveitamento ${correct}/${asked} (${Math.round(acc * 100)}%). ${ruleText} A etapa final foi dominada e o Modo Desafio foi liberado nesta sessão.`;
                     } else if (passed && nextStage > currentStage) {
                         sugg.textContent = `Etapa ${currentStage + 1}/${trail.totalStages} — ${stageName}. Aproveitamento ${correct}/${asked} (${Math.round(acc * 100)}%). ${ruleText} Etapa dominada: a próxima sessão libera a etapa ${nextStage + 1}.`;
                     } else if (passed) {
@@ -17891,7 +18518,7 @@ function endGame() {
             score: gameState.score,
             operation: gameState.currentOperation,
             level: gameState.currentLevel,
-            mode: gameState.isRapidMode ? 'rapido' : 'estudo',
+            mode: getSelectedPlayMode() === 'challenge' ? 'desafio' : (gameState.isRapidMode ? 'rapido' : 'estudo'),
             submode,
             acertos: gameState.acertos,
             erros: gameState.erros,
@@ -18070,6 +18697,7 @@ function attachEventListeners() {
     setDefaultTitle(document.getElementById('toggle-night-mode'), 'Alterna entre modo claro e modo escuro.');
     setDefaultTitle(document.getElementById('mode-rapido'), 'Modo Rápido: questões com tempo (XP por velocidade).');
     setDefaultTitle(document.getElementById('mode-estudo'), 'Modo Estudo: sem tempo (você pode abrir os apoios pedagógicos quando precisar).');
+    setDefaultTitle(document.getElementById('mode-desafio-main'), getChallengeUnlockMessage());
     setDefaultTitle(document.getElementById('layout-auto'), 'Layout automático: ajusta conforme o dispositivo.');
     setDefaultTitle(document.getElementById('layout-mobile'), 'Força layout de celular (botões maiores).');
     setDefaultTitle(document.getElementById('layout-desktop'), 'Força layout de PC (mais espaço na tela).');
@@ -18133,9 +18761,14 @@ function attachEventListeners() {
     // 1. Seleção de Operação (Vai para a tela de Nível)
     operationButtons.forEach(button => {
         button.addEventListener('click', () => {
+            if (String(loadPetHomePrefs().mode || '').trim() === 'challenge') {
+                showFeedbackMessage('No Modo Desafio, não há escolha de operação. As ligas misturam todas as operações.', 'info', 3200);
+                return;
+            }
             // Guarda a operação para ser usada quando o nível for selecionado
             gameState.currentOperation = button.getAttribute('data-operation');
             try { updatePetHomePrefs({ operation: gameState.currentOperation }); } catch (_) {}
+            try { updateHomeMainChallengeButton(); } catch (_) {}
             
             // MUDANÇA: Vai para a tela de seleção de nível
             exibirTela('level-selection-screen');
@@ -18153,7 +18786,22 @@ speak(`Operação ${gameState.currentOperation} selecionada. Agora escolha o ní
         button.addEventListener('click', () => {
             const requestedLevel = button.getAttribute('data-level');
             try { updatePetHomePrefs({ level: requestedLevel }); } catch (_) {}
+            try { gameState.currentLevel = requestedLevel; updateHomeMainChallengeButton(); } catch (_) {}
             if (requestedLevel === 'apprentice' && !getOperationLevelOrder(gameState.currentOperation, { isRapidMode: !!gameState.isRapidMode }).includes('apprentice')) return;
+            const selectedHomeMode = String(loadPetHomePrefs().mode || 'study').trim();
+            if (selectedHomeMode === 'challenge') {
+                const leagueAvailability = getChallengeLeagueAvailability(gameState.currentOperation, requestedLevel);
+                if (!leagueAvailability.available && !FORCE_UNLOCK_CHALLENGE_FOR_TEST) {
+                    showFeedbackMessage(leagueAvailability.reason || 'Esta liga ainda está bloqueada no Modo Desafio.', 'warning', 3600);
+                    return;
+                }
+                gameState.isRapidMode = false;
+                gameState.currentLevel = requestedLevel;
+                try { setHomeModeButtonsActive('challenge'); } catch (_) {}
+                try { updatePetHomePrefs({ mode: 'challenge', operation: gameState.currentOperation, level: requestedLevel }); } catch (_) {}
+                startGame(gameState.currentOperation, requestedLevel, { forceChallenge: true });
+                return;
+            }
             const resolved = resolveRequestedPedagogicalLevel(gameState.currentOperation, requestedLevel);
             if (resolved.blocked) {
                 showFeedbackMessage(resolved.state?.recommendation || resolved.state?.detail || 'Este nível ainda está bloqueado pedagogicamente.', 'warning', 3600);
@@ -18167,8 +18815,8 @@ speak(`Operação ${gameState.currentOperation} selecionada. Agora escolha o ní
             }
             if (level === 'apprentice') {
                 gameState.isRapidMode = false;
-                modeEstudoBtn.classList.add('active');
-                modeRapidoBtn.classList.remove('active');
+                try { updatePetHomePrefs({ mode: 'study' }); } catch (_) {}
+                try { setHomeModeButtonsActive('study'); } catch (_) {}
                 showFeedbackMessage('Aprendiz inicia por padrão no Modo Estudo, com foco em compreensão.', 'info', 2800);
                 startGame(gameState.currentOperation, 'apprentice');
                 return;
@@ -18224,6 +18872,32 @@ speak(`Operação ${gameState.currentOperation} selecionada. Agora escolha o ní
             startRequestedResultLevel(targetLevel);
         });
     }
+    const btnLevelScreenChallenge = document.getElementById('btn-level-screen-challenge');
+    if (btnLevelScreenChallenge) {
+        btnLevelScreenChallenge.addEventListener('click', () => {
+            const operation = String(btnLevelScreenChallenge.dataset.operation || gameState.currentOperation || '');
+            const targetLevel = String(btnLevelScreenChallenge.dataset.level || gameState.currentLevel || '');
+            if (!operation || !targetLevel) {
+                showFeedbackMessage('O Modo Desafio ainda não tem um nível definido para validação.', 'warning', 3200);
+                return;
+            }
+            const availability = getDirectChallengeAvailability(operation, targetLevel, { silent: true });
+            if (!availability.available) {
+                showFeedbackMessage(availability.reason || 'O Modo Desafio ainda está bloqueado para este nível.', 'warning', 4200);
+                return;
+            }
+            gameState.currentOperation = operation;
+            startRequestedResultLevel(targetLevel, { forceChallenge: true });
+        });
+    }
+    const btnResultChallenge = document.getElementById('btn-result-challenge');
+    if (btnResultChallenge) {
+        btnResultChallenge.addEventListener('click', () => {
+            const targetLevel = String(btnResultChallenge.dataset.targetLevel || gameState.currentLevel || '');
+            if (!targetLevel) return;
+            startRequestedResultLevel(targetLevel, { forceChallenge: true });
+        });
+    }
     const btnResultSaveProgress = document.getElementById('btn-result-save-progress');
     if (btnResultSaveProgress) {
         btnResultSaveProgress.addEventListener('click', async () => {
@@ -18271,29 +18945,46 @@ speak(`Operação ${gameState.currentOperation} selecionada. Agora escolha o ní
 ensureTouchClick(toggleNightMode);
 ensureTouchClick(modeRapidoBtn);
 ensureTouchClick(modeEstudoBtn);
+if (modeDesafioMainBtn) ensureTouchClick(modeDesafioMainBtn);
 ensureTouchClick(document.getElementById('toggle-dyslexia'));
 ensureTouchClick(document.getElementById('toggle-calm'));
 ensureTouchClick(document.getElementById('toggle-extra-time'));
 ensureTouchClick(document.getElementById('toggle-vibrate'));
 updateModeAwareLevelCardCopy();
+try { updateHomeMainChallengeButton(); } catch (_) {}
 // 5. Toggle Modo Rápido/Estudo
     modeRapidoBtn.addEventListener('click', () => {
         gameState.isRapidMode = true;
         try { updatePetHomePrefs({ mode: 'rapid' }); } catch (_) {}
-        modeRapidoBtn.classList.add('active');
-        modeEstudoBtn.classList.remove('active');
+        try { setHomeModeButtonsActive('rapid'); } catch (_) {}
         showFeedbackMessage("Modo Rápido (com tempo) selecionado!", 'incentive', 2500);
         updateModeAwareLevelCardCopy();
         try { if (gameState.currentOperation) updateLevelButtonsForOperation(gameState.currentOperation); } catch (_) {}
+        try { updateHomeMainChallengeButton(); } catch (_) {}
     });
     modeEstudoBtn.addEventListener('click', () => {
         gameState.isRapidMode = false;
-        modeEstudoBtn.classList.add('active');
-        modeRapidoBtn.classList.remove('active');
+        try { updatePetHomePrefs({ mode: 'study' }); } catch (_) {}
+        try { setHomeModeButtonsActive('study'); } catch (_) {}
         showFeedbackMessage("Modo Estudo (Infinito, Sem Tempo) selecionado! Use os apoios pedagógicos quando precisar.", 'incentive', 2500);
         updateModeAwareLevelCardCopy();
         try { if (gameState.currentOperation) updateLevelButtonsForOperation(gameState.currentOperation); } catch (_) {}
+        try { updateHomeMainChallengeButton(); } catch (_) {}
     });
+    if (modeDesafioMainBtn) {
+        modeDesafioMainBtn.addEventListener('click', () => {
+            gameState.isRapidMode = false;
+            try { updatePetHomePrefs({ mode: 'challenge' }); } catch (_) {}
+            try { setHomeModeButtonsActive('challenge'); } catch (_) {}
+            const state = updateHomeMainChallengeButton() || {};
+            gameState.currentOperation = CHALLENGE_MIX_OPERATION;
+            try { updatePetHomePrefs({ operation: CHALLENGE_MIX_OPERATION, level: state.level || getCurrentChallengeLeagueLevel() }); } catch (_) {}
+            exibirTela('level-selection-screen');
+            try { updateLevelButtonsForOperation(CHALLENGE_MIX_OPERATION); } catch (_) {}
+            const summary = getChallengeLeagueHomeSummary(CHALLENGE_MIX_OPERATION);
+            showFeedbackMessage(state.available ? (summary ? `Modo Desafio selecionado. Agora escolha a liga. ${summary}.` : 'Modo Desafio selecionado. Agora escolha a liga.') : getChallengeUnlockMessage(), 'info', 3600);
+        });
+    }
     // 6. Toggle Leitura de Voz
     if (toggleVoiceRead) {
         toggleVoiceRead.addEventListener('click', () => {
@@ -19186,57 +19877,15 @@ function getAdaptiveDistractorBias(operation, ctx = {}) {
         return { commonError: '', lastTypicalError: '', stageIndex: -1, learningType: String(ctx.learningType || 'fluency') };
     }
 }
-function normalizePedagogicalErrorType(value) {
-    const safe = String(value || '').trim().toLowerCase();
-    if (safe === 'conceitual') return 'Conceitual';
-    if (safe === 'leitura') return 'Leitura';
-    if (safe === 'estratégia' || safe === 'estrategia') return 'Estratégia';
-    return 'Cálculo';
-}
-function getLikelyErrorTypeForQuestion(question) {
-    try {
-        const ctx = getQuestionPedagogicalContext(question);
-        if (ctx.isContext || ctx.isRemainder || ctx.isComparison) return 'Leitura';
-        if (ctx.isEstimation || ctx.isMental || ctx.isDecomposition) return 'Estratégia';
-        if (String(question?.learningType || '').toLowerCase() === 'comprehension' || ctx.isMissingTerm || ctx.isMissingFactor || ctx.isMissingDividend || ctx.isMissingDivisor) return 'Conceitual';
-        return 'Cálculo';
-    } catch (_) {
-        return 'Cálculo';
-    }
-}
-function buildErrorTypeSupportRoute(errorType, question, diagnosis = null) {
-    const safeType = normalizePedagogicalErrorType(errorType);
-    const ctx = getQuestionPedagogicalContext(question || {});
-    const label = String(diagnosis?.label || '').trim();
-    if (safeType === 'Leitura') {
-        return ctx.isContext || ctx.isRemainder
-            ? 'Volte ao enunciado e destaque o que a pergunta quer responder: grupos completos, sobra, diferença ou total.'
-            : 'Volte ao enunciado e marque qual número é dado e qual número a pergunta quer descobrir.';
-    }
-    if (safeType === 'Conceitual') {
-        return label
-            ? `Pare o cálculo automático e retome a ideia central da habilidade: ${label.toLowerCase()}.`
-            : 'Pare o cálculo automático e retome a ideia central da habilidade antes de testar outra alternativa.';
-    }
-    if (safeType === 'Estratégia') {
-        return 'Troque de caminho: decomponha, compare por partes, use operação inversa ou confira por outro método antes de responder.';
-    }
-    return 'Refaça a conta com calma, por ordens ou por etapas, e confira o resultado antes de confirmar.';
-}
 function inferErrorDimension(question, diagnosis = null) {
     try {
-        const ctx = getQuestionPedagogicalContext(question || {});
+        const learningType = String(question?.learningType || inferStageLearningType(question?.operacao || '', question?.masteryStageLabel || question?.stageLabel || '') || 'fluency');
         const code = String(diagnosis?.code || '').toLowerCase();
-        const label = String(diagnosis?.label || '').toLowerCase();
-        if (/(used_total|used_known|used_dividend|used_divisor|used_subtrahend|used_minuend|used_difference|used_difference_again|used_quotient|used_radicand)/i.test(code)) return 'Leitura';
-        if (ctx.isContext && /(resto|quociente|divisor|dividendo|difference|compar)/i.test(code + ' ' + label)) return 'Leitura';
-        if (/(as_addition|as_subtraction|as_multiplication|as_sum|power_|root_|bridge_|missing_|divisor|dividendo|resto|factor|base|expoente|comparison|relation|relação|term)/i.test(code)) return 'Conceitual';
-        if (/(stopped_partial_sum|extra_group|missed_one_group|extra_repetition|missing_repetition|factor_shift|skip_|neighbor|estimation)/i.test(code)) return 'Estratégia';
-        if (ctx.isEstimation || ctx.isMental || ctx.isDecomposition) return 'Estratégia';
-        if (String(question?.learningType || inferStageLearningType(question?.operacao || '', question?.masteryStageLabel || question?.stageLabel || '') || '').toLowerCase() === 'comprehension') return 'Conceitual';
-        return 'Cálculo';
+        if (learningType === 'comprehension') return 'Compreensão';
+        if (/(missing|used_|difference|divisor|dividendo|resto|factor|base|expoente|root_as_half|bridge|comparison|relation|relação)/i.test(code)) return 'Compreensão';
+        return 'Fluência';
     } catch (_) {
-        return 'Cálculo';
+        return 'Fluência';
     }
 }
 function computeDistractorCandidateInfo(operation, answer, ctx, value) {
@@ -19592,21 +20241,16 @@ function buildQuestionLearningContract(question) {
     const raw = String(question?.question || '').replace(/\s*=\s*\?\s*$/, '').trim();
     const op = String(question?.operacao || question?.semanticOperation || '').trim();
     const stageLabel = String(question?.stageLabel || question?.masteryStageLabel || '').trim();
-    const normalizedStage = normalizeTrailLabel(stageLabel);
-    const learningType = String(question?.learningType || inferStageLearningType(op, stageLabel) || 'fluency');
     let answerPolicy = 'exact';
     if (/mais próxima por baixo/i.test(raw) || /aproximada/i.test(raw)) answerPolicy = 'floor-estimate';
     else if (/Sem calcular exatamente/i.test(raw) || /estimativa/i.test(stageLabel)) answerPolicy = 'estimate-nearest';
     else if (/resto/i.test(raw)) answerPolicy = 'remainder';
-    const reasoningRequired = learningType === 'comprehension' || /(compar|padr|context|resto|diferen|faltante|estimativa|relação|relacao)/i.test(normalizedStage || raw);
     return {
         skillKey: `${op}::${normalizeTrailLabel(stageLabel) || 'geral'}`,
         operation: op,
         stageLabel,
         answerPolicy,
-        answer: Number(question?.answer),
-        reasoningRequired,
-        learningType
+        answer: Number(question?.answer)
     };
 }
 function buildQuestionPayload(operation, num1, num2, answer, questionString, questionSpeak, stageLabel) {
@@ -19643,37 +20287,34 @@ function showPedagogicalFeedback(isCorrect, operation, q, selectedValue, opts = 
     const isRapid = !!gameState.isRapidMode;
     const DURATION_RAPID = 15000;
     const resolvedOperation = getResolvedFeedbackOperation(operation, q);
-    const diagnosis = !isCorrect ? (getDistractorDiagnosis(q, selectedValue) || null) : null;
-    const dimension = diagnosis?.errorDimension || inferErrorDimension(q, diagnosis);
-    const flow = getAdaptiveLearningFlowMeta(q, { attempts: Number(gameState.attemptsThisQuestion || 0), errorType: dimension });
+    const flow = getAdaptiveLearningFlowMeta(q, { attempts: Number(gameState.attemptsThisQuestion || 0) });
     const stageInsight = getCurrentQuestionStageDiagnostic(q);
-    const contract = q?.learningContract || buildQuestionLearningContract(q || {});
     if (isCorrect) {
         const challenge = String(stageInsight?.focus?.checkpoint || stageInsight?.focus?.studentMove || getPriority3AlternativePathText(q) || '').trim();
         const domainTxt = String(stageInsight?.domain?.stateLabel || '').trim();
         let successMsg = '✅ Correto!';
         if (!isRapid) {
-            if (flow.attempts === 0 && flow.supportMode === 'normal') successMsg += contract.reasoningRequired ? ' Boa leitura da ideia central.' : ' Boa leitura da estratégia.';
+            if (flow.attempts === 0 && flow.supportMode === 'normal') successMsg += ' Boa leitura da estratégia.';
             else successMsg += ' Você reorganizou o raciocínio e conseguiu.';
             if (domainTxt) successMsg += ` Domínio atual: ${domainTxt}.`;
-            if (contract.reasoningRequired) successMsg += ` Conferência mental: ${buildQuestionKeyword(q).replace(/^Palavra-chave:\s*/i, '')}.`;
             if (challenge) successMsg += ` Próximo desafio: ${challenge}`;
         }
         showFeedbackControlled(successMsg.trim(), 'success', isRapid ? 2500 : 5200);
         return;
     }
+    const diagnosis = getDistractorDiagnosis(q, selectedValue) || null;
     const typicalError = diagnosis?.label || classifyTypicalError(q, selectedValue);
+    const dimension = inferErrorDimension(q, diagnosis);
     const targeted = typicalError && typicalError !== 'Erro de cálculo ou atenção nesta habilidade.' ? typicalError : '';
     const hint = buildOperationSpecificPedagogicalHint(resolvedOperation, q, selectedValue, isRapid);
-    const route = String(diagnosis?.supportRoute || buildErrorTypeSupportRoute(dimension, q, diagnosis) || '').trim();
     const nextStep = (!isRapid && stageInsight && stageInsight.focus && String(stageInsight.focus.studentMove || '').trim())
         ? ` Próximo passo: ${String(stageInsight.focus.studentMove || '').trim()}`
         : '';
     const strategy = String(getPriority3StrategyText(q) || '').trim();
     const alternative = String(getPriority3AlternativePathText(q) || buildQuestionStrategicHintText(q) || '').trim();
     let msg = targeted
-        ? `Erro de ${String(dimension || 'cálculo').toLowerCase()}: ${targeted}. ${route} ${hint}`.trim()
-        : `${route} ${hint}`.trim();
+        ? `Erro de ${dimension.toLowerCase()}: ${targeted} ${hint}`.trim()
+        : `${hint}`;
     let prefix = '💡 Dica rápida: ';
     if (!isRapid && flow.tier >= 2) {
         prefix = '🧭 Explicação guiada: ';
@@ -19683,7 +20324,6 @@ function showPedagogicalFeedback(isCorrect, operation, q, selectedValue, opts = 
         prefix = '🧩 Explicação completa: ';
         msg = `${msg} Organize assim: ${strategy}. Faça em etapas: ${alternative}`.trim();
     }
-    if (contract.reasoningRequired) msg = `${msg} Antes de tentar de novo, responda mentalmente: ${buildQuestionKeyword(q).replace(/^Palavra-chave:\s*/i, '')}.`.trim();
     msg = `${msg}${nextStep}`.trim();
     if (isRapid || flow.tier === 1) {
         showFeedbackControlled(prefix + msg, 'incentive', DURATION_RAPID);
@@ -19819,7 +20459,6 @@ function saveError(question, userAnswer) {
         num2: question.num2 ?? null,
         stageLabel: question.stageLabel || question.masteryStageLabel || '',
         typicalError,
-        teacherRecommendation: String(getTeacherRetakeErrorFocus({ code: diagnosis?.code, label: diagnosis?.label || typicalError, operation: question.operacao, stageLabel: question.stageLabel || question.masteryStageLabel || '' }).teacherMove || ''),
         timestamp: Date.now()
     };
     gameState.errors.unshift(errorData);
@@ -19853,6 +20492,7 @@ function recordOperationTrailQuestionResolution(question, wasCorrectFinal) {
         ? String(question.consolidationStageLabel || question.stageLabel || '')
         : String(question.isReview ? (question.sourceStageLabel || question.stageLabel || '') : (question.masteryStageLabel || question.stageLabel || ''));
     const learningType = question.learningType || inferStageLearningType(trail.operation, resolvedStageLabel);
+    const supportMode = normalizeAdaptiveSupportMode(question?.supportMode || trail.supportMode || 'normal');
     const lastErrorMeta = (!wasCorrectFinal && gameState.__lastErrorMeta && typeof gameState.__lastErrorMeta === 'object') ? gameState.__lastErrorMeta : null;
     updateOperationSkillReviewRecord(trail.operation, trail.level, resolvedStageIndex, resolvedStageLabel, learningType, !!wasCorrectFinal, {
         isBridgeQuestion: !!question.isBridgeQuestion,
@@ -19860,20 +20500,23 @@ function recordOperationTrailQuestionResolution(question, wasCorrectFinal) {
         errorDimension: lastErrorMeta?.errorDimension || '',
         selectedDistractorCode: lastErrorMeta?.selectedDistractorCode || '',
         selectedDistractorLabel: lastErrorMeta?.selectedDistractorLabel || '',
-        supportMode: trail.supportMode || 'normal',
-        wasAssisted: !!(trail.supportMode && trail.supportMode !== 'normal'),
+        supportMode,
+        wasAssisted: supportMode !== 'normal',
         usedAlternativeResponse: !!question.usedAlternativeResponse,
         sessionKey: String(gameState.sessionKey || '')
     });
     gameState.__lastErrorMeta = null;
     if (trail.consolidationMode && question.isConsolidation) {
         if (!trail.consolidation || typeof trail.consolidation !== 'object') {
-            trail.consolidation = { plan: [], index: 0, asked: 0, correct: 0, perStage: {} };
+            trail.consolidation = { plan: [], index: 0, asked: 0, correct: 0, perStage: {}, perRole: {}, errorHistogram: {}, independentAsked: 0, independentCorrect: 0, assistedAsked: 0, assistedCorrect: 0 };
         }
         const cons = trail.consolidation;
+        const challengeRole = String(question.challengeRole || inferChallengeValidationRole(trail.operation, resolvedStageLabel, learningType) || 'fluency').trim() || 'fluency';
         cons.asked = Math.max(0, Number(cons.asked) || 0) + 1;
         if (wasCorrectFinal) cons.correct = Math.max(0, Number(cons.correct) || 0) + 1;
         if (!cons.perStage || typeof cons.perStage !== 'object') cons.perStage = {};
+        if (!cons.perRole || typeof cons.perRole !== 'object') cons.perRole = {};
+        if (!cons.errorHistogram || typeof cons.errorHistogram !== 'object') cons.errorHistogram = {};
         const stageKey = String(resolvedStageIndex);
         const prev = cons.perStage[stageKey] || { asked: 0, correct: 0, label: resolvedStageLabel, learningType };
         cons.perStage[stageKey] = {
@@ -19882,6 +20525,21 @@ function recordOperationTrailQuestionResolution(question, wasCorrectFinal) {
             label: resolvedStageLabel,
             learningType
         };
+        const prevRole = cons.perRole[challengeRole] || { asked: 0, correct: 0, label: formatChallengeRoleLabel(challengeRole) };
+        cons.perRole[challengeRole] = {
+            asked: Math.max(0, Number(prevRole.asked) || 0) + 1,
+            correct: Math.max(0, Number(prevRole.correct) || 0) + (wasCorrectFinal ? 1 : 0),
+            label: formatChallengeRoleLabel(challengeRole)
+        };
+        if (supportMode === 'normal') {
+            cons.independentAsked = Math.max(0, Number(cons.independentAsked) || 0) + 1;
+            if (wasCorrectFinal) cons.independentCorrect = Math.max(0, Number(cons.independentCorrect) || 0) + 1;
+        } else {
+            cons.assistedAsked = Math.max(0, Number(cons.assistedAsked) || 0) + 1;
+            if (wasCorrectFinal) cons.assistedCorrect = Math.max(0, Number(cons.assistedCorrect) || 0) + 1;
+        }
+        const errorKey = String(lastErrorMeta?.selectedDistractorCode || lastErrorMeta?.typicalError || '').trim();
+        if (!wasCorrectFinal && errorKey) cons.errorHistogram[errorKey] = Math.max(0, Number(cons.errorHistogram[errorKey]) || 0) + 1;
         cons.index = Math.max(0, Number(cons.index) || 0) + 1;
         trail.lastQuestionWasReview = false;
         return;
@@ -19977,18 +20635,26 @@ function generateQuestionFromOperationTrail(operation) {
             if (!item) return null;
             const sourceStageIndex = Math.max(0, Math.min(Number(item.stageIndex) || 0, stages.length - 1));
             const sourceStage = stages[sourceStageIndex] || stages[0];
+            const challengeRole = String(item.challengeRole || 'fluency').trim() || 'fluency';
             const learningType = item.learningType || inferStageLearningType(operation, sourceStage.label || '');
-            let q = sourceStage.gen({
-                stageIndex: sourceStageIndex,
-                stageSize: Math.max(1, Number(sourceStage.count) || 1),
-                totalStages: stages.length,
-                bankSize: trail.bankSize,
-                absoluteIndex: Math.max(0, Number(cons.index) || 0)
-            });
-            if (shouldInjectStrategyQuestion(operation, learningType, trail.level, false, true)) {
+            let q = null;
+            if (challengeRole === 'transfer' && item.forceStrategy) {
+                q = buildStrategyQuestion(operation, sourceStage.label || '', trail.level);
+                if (!q && item.allowBridge) q = buildBridgeQuestion(operation, sourceStage.label || '');
+            }
+            if (!q) {
+                q = sourceStage.gen({
+                    stageIndex: sourceStageIndex,
+                    stageSize: Math.max(1, Number(sourceStage.count) || 1),
+                    totalStages: stages.length,
+                    bankSize: trail.bankSize,
+                    absoluteIndex: Math.max(0, Number(cons.index) || 0)
+                });
+            }
+            if (challengeRole !== 'transfer' && shouldInjectStrategyQuestion(operation, learningType, trail.level, false, true)) {
                 const strategyQ = buildStrategyQuestion(operation, sourceStage.label || q?.stageLabel || '', trail.level);
                 if (strategyQ) q = strategyQ;
-            } else if (shouldInjectBridgeQuestion(operation, learningType, false, true)) {
+            } else if (challengeRole !== 'transfer' && shouldInjectBridgeQuestion(operation, learningType, false, true)) {
                 const bridgeQ = buildBridgeQuestion(operation, sourceStage.label || q?.stageLabel || '');
                 if (bridgeQ) q = bridgeQ;
             }
@@ -19996,6 +20662,10 @@ function generateQuestionFromOperationTrail(operation) {
                 q.isConsolidation = true;
                 q.consolidationStageIndex = sourceStageIndex;
                 q.consolidationStageLabel = sourceStage.label || '';
+                q.challengeRole = challengeRole;
+                q.challengeRoleLabel = formatChallengeRoleLabel(challengeRole);
+                q.challengePlanSeq = Math.max(0, Number(item.seq) || 0);
+                q.challengeLearningGoal = challengeRole === 'fluency' ? 'fluency' : 'comprehension';
             }
             return finalizeQuestion(q, sourceStage.label || '', sourceStageIndex, sourceStage.label || '', Math.max(0, Number(cons.index) || 0), Number(sourceStage.count) || 1, false, learningType, true);
         }

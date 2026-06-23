@@ -124,3 +124,17 @@ Isso evita quebrar o jogo inteiro por tentar migrar tudo de uma vez.
 - O envio usa `client_attempt_id` único para evitar duplicação em retries de sync.
 - Cada tentativa referencia a sessão cloud por `client_session_id`/`game_session_id`.
 - Se o aluno estiver sem login no momento, a tentativa fica na fila local e sobe depois.
+
+
+## Desafio online (ligas)
+
+Esta versão já prepara o Supabase para competição online do **Modo Desafio**:
+- cada rodada do desafio é salva em `game_sessions` com `mode = 'challenge'`;
+- o metadata da sessão leva `challengeLeague` (liga, medalha e status);
+- o snapshot do aluno em `student_progress.snapshot` carrega `challengeLeagues.challenge_mix`;
+- há duas views prontas no schema: `challenge_session_leaderboard` e `challenge_league_standings`.
+
+Uso prático:
+1. aplicar o `supabase-schema.sql` atualizado;
+2. garantir login dos alunos;
+3. consultar as views para montar ranking online e classificação por liga.

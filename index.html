@@ -23,7 +23,7 @@
 <meta property="og:image" content="icon-512.png"/>
 
 </head>
-<body class="light-mode" data-version="1.16.0-comprehension-focus-v47">
+<body class="light-mode" data-version="1.14.1-cloud-v44">
 <a class="skip-link" href="#app">Pular para o conteúdo</a>
 <noscript><div class="noscript-warning">Este aplicativo precisa de JavaScript para funcionar.</div></noscript>
 <span class="libras-alert hidden" id="libras-alert"></span>
@@ -109,8 +109,9 @@
 
 <div class="modes-toggle">
                     Modo:
-                    <button class="mode-btn" id="mode-rapido">Rápido</button>
-<button class="mode-btn active" id="mode-estudo">Estudo</button>
+                    <button class="mode-btn active" id="mode-estudo">Estudo</button>
+<button class="mode-btn" id="mode-rapido">Rápido</button>
+<button class="mode-btn is-disabled" id="mode-desafio-main" aria-disabled="true" title="Para liberar o Modo Desafio, conclua primeiro o nível Mestre da multiplicação no Modo Rápido com o aproveitamento mínimo exigido.">Desafio 🔒</button>
 </div>
 </div>
 <div class="accessibility-bar">
@@ -163,8 +164,8 @@
 <h1>Configuração e Nível</h1>
 </header>
 <div class="info-card">
-<h2>Selecione a Dificuldade</h2>
-<p>O nível de dificuldade define a complexidade das questões e, no Modo Rápido, o tempo limite, que é dobrado caso a Acessibilidade (Voz ou Libras) esteja ativa, conforme a regra do jogo.</p>
+<h2 id="level-selection-title">Selecione a Dificuldade</h2>
+<p id="level-selection-copy">O nível de dificuldade define a complexidade das questões e, no Modo Rápido, o tempo limite, que é dobrado caso a Acessibilidade (Voz ou Libras) esteja ativa, conforme a regra do jogo.</p>
 </div>
 <div class="level-selection">
 <button class="level-btn hidden" data-level="apprentice" id="level-apprentice-btn">
@@ -184,9 +185,13 @@
 <p>Nível avançado para consolidar autonomia, precisão e desafios mais complexos.</p>
 </button>
 </div>
-<p style="text-align: center; margin-top: 20px; font-weight: 600; color: var(--cor-secundaria);">
+<p id="level-selection-mode-note" style="text-align: center; margin-top: 20px; font-weight: 600; color: var(--cor-secundaria);">
                 O Modo de Jogo (Rápido/Estudo) e Acessibilidade já foram definidos. Clique em um nível para iniciar o desafio!
             </p>
+<div class="level-challenge-persistent-wrap">
+<button class="btn-primary level-challenge-persistent" id="btn-level-screen-challenge" type="button" aria-disabled="true" title="O Modo Desafio ainda está bloqueado para este nível.">🧩 Modo Desafio 🔒</button>
+<p class="level-challenge-persistent-note" id="level-screen-challenge-note">Selecione ou consolide um nível no Modo Estudo para liberar a validação de compreensão real.</p>
+</div>
 </div>
 <div class="screen" id="game-screen">
 <header class="game-header">
@@ -262,6 +267,7 @@
 <div class="footer-options result-footer-options">
 <button class="btn-primary" id="btn-result-continue-level" type="button" style="display: none; flex-grow: 1;">Continuar neste nível</button>
 <button class="btn-primary" id="btn-result-next-level" type="button" style="display: none; flex-grow: 1;">Ir para o próximo nível</button>
+<button class="btn-primary" id="btn-result-challenge" type="button" style="display: none; flex-grow: 1;">🧩 Modo Desafio</button>
 <button class="btn-secondary" id="btn-result-save-progress" type="button" style="flex-grow: 1;">Salvar progresso</button>
 <button class="btn-secondary btn-voltar-home" id="btn-result-home" type="button" style="flex-grow: 1;">Voltar à tela inicial</button>
 <button class="btn-secondary" id="btn-treinar-erros" style="display: none;">Treinar Erros</button>
