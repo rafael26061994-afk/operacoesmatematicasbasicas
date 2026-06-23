@@ -19464,7 +19464,7 @@ function decorateApprenticeQuestionVisuals(question, operation, level) {
     try {
         if (!question || String(level || '').toLowerCase() !== 'apprentice') return question;
         const baseText = String(question.question || '').trim();
-        if (!baseText || baseText.includes('◼')) return question;
+        if (!baseText || baseText.includes('=')) return question;
         let visual = '';
         const n1 = Number(question.num1);
         const n2 = Number(question.num2);
@@ -19492,7 +19492,7 @@ function decorateApprenticeQuestionVisuals(question, operation, level) {
         }
         if (visual) {
             question.visualHint = visual;
-            question.question = `${baseText} ◼ ${visual}`;
+            question.question = `${baseText} = ${visual}`;
         }
     } catch (_) {}
     return question;
