@@ -1,3 +1,10 @@
+import { AdaptiveEngine } from './core/AdaptiveEngine.js';
+import { RetentionManager } from './core/RetentionManager.js';
+import { DiagnosticHintEngine } from './core/DiagnosticHintEngine.js';
+
+// Variáveis globais para controlar a tentativa e o tempo da questão atual
+let currentAttempt = 1;
+let startTimeQuestion = Date.now();
 /* =========================================================
    XP por velocidade (Modo Rápido)
    - Quanto mais rápido responde, mais XP.
@@ -20722,5 +20729,12 @@ function generateQuestionFromOperationTrail(operation) {
         q.learningTypeLabel = getLearningTypeLabel(q.learningType);
         decorateApprenticeQuestionVisuals(q, operation, trail.level);
     }
+    return q;
+}
+
+    // === ADICIONE ESTAS 2 LINHAS ABAIXO ===
+    currentAttempt = 1; // Reseta as tentativas para a nova questão
+    startTimeQuestion = Date.now(); // Marca a hora que a questão apareceu
+
     return q;
 }
