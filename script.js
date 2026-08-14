@@ -47,12 +47,17 @@ function hideFeedbackNow() {
   if (!element) return;
 
   try { 
-    if (window.__feedbackControl.timer) clearTimeout(window.__feedbackControl.timer); 
-  } catch (e) {}
+    if (window.__feedbackControl && window.__feedbackControl.timer) {
+      clearTimeout(window.__feedbackControl.timer); 
+    }
+  } catch (e) {
+    // Ignora erros de timer silenciosamente
+  }
 
   element.classList.remove('show');
   setTimeout(() => element.classList.add('hidden'), 50);
 }
+
 // --- VARIÁVEIS DE ESTADO GLOBAL E CACHE DE ELEMENTOS ---
 const screens = document.querySelectorAll('.screen');
 const questionText = document.getElementById('question-text');
