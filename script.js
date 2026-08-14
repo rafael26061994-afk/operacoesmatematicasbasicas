@@ -16986,14 +16986,6 @@ if (isChallengeMixOperation(operation)) {
     try { refreshContinueSessionButtonVisibility(); } catch (_) {}
 }
 
-function escapeHtml(str) {
-    return String(str == null ? '' : str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
 function parseRepeatedAdditionExpression(questionText) {
     const raw = String(questionText || '').replace(/\s*=\s*\?\s*$/, '').trim();
     if (!raw || !/\+/.test(raw) || /[x×÷\-]|\^|²|³|√|∛/.test(raw)) return null;
