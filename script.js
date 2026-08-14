@@ -53,7 +53,6 @@ function hideFeedbackNow() {
   element.classList.remove('show');
   setTimeout(() => element.classList.add('hidden'), 50);
 }
-}
 // --- VARIÁVEIS DE ESTADO GLOBAL E CACHE DE ELEMENTOS ---
 const screens = document.querySelectorAll('.screen');
 const questionText = document.getElementById('question-text');
