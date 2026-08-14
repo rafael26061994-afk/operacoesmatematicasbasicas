@@ -20183,55 +20183,6 @@ function decorateApprenticeQuestionVisuals(question, operation, level) {
         answer: Number(question?.answer)
     };
 }
-function showPedagogicalFeedback(isCorrect, operation, q, selectedValue, opts = {}) {
-    const isRapid = !!gameState.isRapidMode;
-    const DURATION_RAPID = 15000;
-    const resolvedOperation = getResolvedFeedbackOperation(operation, q);
-    const flow = getAdaptiveLearningFlowMeta(q, { attempts: Number(gameState.attemptsThisQuestion || 0) });
-    const stageInsight = getCurrentQuestionStageDiagnostic(q);
-    if (isCorrect) {
-        const challenge = String(stageInsight?.focus?.checkpoint || stageInsight?.focus?.studentMove || getPriority3AlternativePathText(q) || '').trim();
-        const domainTxt = String(stageInsight?.domain?.stateLabel || '').trim();
-        let successMsg = '✅ Correto!';
-        if (!isRapid) {
-            if (flow.attempts === 0 && flow.supportMode === 'normal') successMsg += ' Boa leitura da estratégia.';
-            else successMsg += ' Você reorganizou o raciocínio e conseguiu.';
-            if (domainTxt) successMsg += ` Domínio atual: ${domainTxt}.`;
-            if (challenge) successMsg += ` Próximo desafio: ${challenge}`;
-        }
-        showFeedbackControlled(successMsg.trim(), 'success', isRapid ? 2500 : 5200);
-        return;
-    }
-    const diagnosis = getDistractorDiagnosis(q, selectedValue) || null;
-    const typicalError = diagnosis?.label || classifyTypicalError(q, selectedValue);
-    const dimension = inferErrorDimension(q, diagnosis);
-    const targeted = typicalError && typicalError !== 'Erro de cálculo ou atenção nesta habilidade.' ? typicalError : '';
-    const hint = buildOperationSpecificPedagogicalHint(resolvedOperation, q, selectedValue, isRapid);
-    const nextStep = (!isRapid && stageInsight && stageInsight.focus && String(stageInsight.focus.studentMove || '').trim())
-        ? ` Próximo passo: ${String(stageInsight.focus.studentMove || '').trim()}`
-        : '';
-    const strategy = String(getPriority3StrategyText(q) || '').trim();
-    const alternative = String(getPriority3AlternativePathText(q) || buildQuestionStrategicHintText(q) || '').trim();
-    let msg = targeted
-        ? `Erro de ${dimension.toLowerCase()}: ${targeted} ${hint}`.trim()
-        : `${hint}`;
-    let prefix = '💡 Dica rápida: ';
-    if (!isRapid && flow.tier >= 2) {
-        prefix = '🧭 Explicação guiada: ';
-        msg = `${msg} Organize assim: ${strategy}`.trim();
-    }
-    if (!isRapid && flow.tier >= 3) {
-        prefix = '🧩 Explicação completa: ';
-        msg = `${msg} Organize assim: ${strategy}. Faça em etapas: ${alternative}`.trim();
-    }
-    msg = `${msg}${nextStep}`.trim();
-    if (isRapid || flow.tier === 1) {
-        showFeedbackControlled(prefix + msg, 'incentive', DURATION_RAPID);
-    } else {
-        showFeedbackControlled(prefix + msg, 'incentive', 600000);
-        window.__keepFeedbackUntilNextAnswer = true;
-    }
-}
 function updateOperationSkillReviewRecord(operation, level, stageIndex, stageLabel, learningType, wasCorrect, meta = {}) {
     try {
         const map = loadOperationSkillReviewMap();
