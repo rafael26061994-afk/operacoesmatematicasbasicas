@@ -20726,15 +20726,13 @@ function generateQuestionFromOperationTrail(operation) {
         q.absoluteTrailIndex = absolute;
         q.bankSize = trail.bankSize;
         q.learningType = inferStageLearningType(operation, q.stageLabel || '');
-        q.learningTypeLabel = getLearningTypeLabel(q.learningType);
+       q.learningTypeLabel = getLearningTypeLabel(q.learningType);
         decorateApprenticeQuestionVisuals(q, operation, trail.level);
     }
-    return q;
-}
 
-    // === ADICIONE ESTAS 2 LINHAS ABAIXO ===
+    // === RESETS DA QUESTÃO (Coloque exatamente aqui) ===
     currentAttempt = 1; // Reseta as tentativas para a nova questão
-    startTimeQuestion = Date.now(); // Marca a hora que a questão apareceu
+    startTimeQuestion = Date.now(); // Marca a hora em que a questão apareceu
 
     return q;
 }
