@@ -23,18 +23,36 @@ window.__feedbackControl = window.__feedbackControl || {
   timer: null,
   lastShownAt: 0
 };
+
 function showFeedbackControlled(message, type, durationMs) {
-  // limpa timer anterior
-  try { if (window.__feedbackControl.timer) clearTimeout(window.__feedbackControl.timer); } catch (e) {}
-  showFeedbackMessage(message, type, durationMs);
-  // guarda timer (showFeedbackMessage já agenda hide, mas guardamos referência conceitual)
+  // Limpa timer anterior se houver algum rodando
+  try { 
+    if (window.__feedbackControl.timer) clearTimeout(window.__feedbackControl.timer); 
+  } catch (e) {}
+
+  // Exibe a mensagem usando o motor de feedback original da aplicação
+  if (typeof showFeedbackMessage === 'function') {
+    showFeedbackMessage(message, type, durationMs);
+  }
+
+  // Registra o momento em que a dica foi exibida
   window.__feedbackControl.lastShownAt = Date.now();
 }
+
 function hideFeedbackNow() {
-  if (!feedbackMessageElement) return;
-  try { if (window.__feedbackControl.timer) clearTimeout(window.__feedbackControl.timer); } catch (e) {}
-  feedbackMessageElement.classList.remove('show');
-  setTimeout(() => feedbackMessageElement.classList.add('hidden'), 50);
+  const element = typeof feedbackMessageElement !== 'undefined' 
+    ? feedbackMessageElement 
+    : document.getElementById('feedback-message');
+
+  if (!element) return;
+
+  try { 
+    if (window.__feedbackControl.timer) clearTimeout(window.__feedbackControl.timer); 
+  } catch (e) {}
+
+  element.classList.remove('show');
+  setTimeout(() => element.classList.add('hidden'), 50);
+}
 }
 // --- VARIÁVEIS DE ESTADO GLOBAL E CACHE DE ELEMENTOS ---
 const screens = document.querySelectorAll('.screen');
