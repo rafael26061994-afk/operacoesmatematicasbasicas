@@ -20183,36 +20183,6 @@ function decorateApprenticeQuestionVisuals(question, operation, level) {
         answer: Number(question?.answer)
     };
 }
-function buildQuestionPayload(operation, num1, num2, answer, questionString, questionSpeak, stageLabel) {
-    const safeQuestionString = formatQuestionPrompt(questionString);
-    const resolvedOperation = inferSemanticOperationFromQuestionText(safeQuestionString, operation) || operation;
-    const options = buildQuestionOptions(resolvedOperation, answer, {
-        num1,
-        num2,
-        stageLabel: stageLabel || '',
-        questionString: safeQuestionString,
-        voiceQuestion: questionSpeak || safeQuestionString,
-        level: gameState.currentLevel || '',
-        studyDistractorsOnly: !gameState.isRapidMode
-    });
-    const question = {
-        question: safeQuestionString,
-        voiceQuestion: questionSpeak || safeQuestionString,
-        answer,
-        options,
-        voiceOptions: options,
-        distractorMeta: Array.isArray(options?.__distractorMeta) ? options.__distractorMeta.map((it) => ({ ...it })) : [],
-        operacao: resolvedOperation,
-        semanticOperation: resolvedOperation,
-        operationMetadata: operation,
-        operationMismatchAutoFixed: String(resolvedOperation || '') !== String(operation || ''),
-        num1,
-        num2,
-        stageLabel: stageLabel || ''
-    };
-    question.learningContract = buildQuestionLearningContract(question);
-    return decorateApprenticeQuestionVisuals(question, resolvedOperation, gameState.currentLevel || '');
-}
 function showPedagogicalFeedback(isCorrect, operation, q, selectedValue, opts = {}) {
     const isRapid = !!gameState.isRapidMode;
     const DURATION_RAPID = 15000;
